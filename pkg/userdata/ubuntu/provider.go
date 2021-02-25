@@ -21,8 +21,11 @@ limitations under the License.
 package ubuntu
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"mime/multipart"
+	"net/textproto"
 	"strings"
 	"text/template"
 
@@ -125,7 +128,70 @@ func (p Provider) UserData(req plugin.UserDataRequest) (string, error) {
 		return "", fmt.Errorf("failed to execute user-data template: %w", err)
 	}
 
-	return userdatahelper.CleanupTemplateOutput(buf.String())
+	userData, err := userdatahelper.CleanupTemplateOutput(buf.String())
+	if err != nil {
+		return "", fmt.Errorf("failed to clean user data template: %v", err)
+	}
+
+	return MergeUserData(userData, pconfig.CloudInit)
+}
+
+func MergeUserData(userData string, additionalUserData []providerconfigtypes.CloudInitConfig) (string, error) {
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+
+	if err := writer.SetBoundary("==BOUNDARY=="); err != nil {
+		return "", fmt.Errorf("failed to write boundary for user data: %v", err)
+	}
+
+	header := textproto.MIMEHeader{
+		"MIME-Version": {"1.0"},
+		"Content-Type": {"text/cloud-config"},
+	}
+
+	part, err := writer.CreatePart(header)
+
+	if err != nil {
+		return "", fmt.Errorf("failed to write part for user data: %v", err)
+	}
+
+	_, err = part.Write([]byte(userData))
+
+	if err != nil {
+		return "", fmt.Errorf("failed to write data for user data: %v", err)
+	}
+
+	for _, cloudInit := range additionalUserData {
+		mergeType := cloudInit.MergeType
+
+		if len(mergeType) == 0 {
+			mergeType = "list(append)+dict(no_replace,recurse_list)"
+		}
+
+		header := textproto.MIMEHeader{
+			"MIME-Version": {"1.0"},
+			"Content-Type": {"text/cloud-config"},
+			"Merge-Type":   {mergeType},
+		}
+
+		part, err := writer.CreatePart(header)
+
+		if err != nil {
+			return "", fmt.Errorf("failed to write part for user data: %v", err)
+		}
+
+		_, err = part.Write([]byte(cloudInit.UserData))
+
+		if err != nil {
+			return "", fmt.Errorf("failed to write data for user data: %v", err)
+		}
+	}
+
+	writer.Close()
+
+	return "MIME-Version: 1.0\n" +
+		"Content-Type: multipart/mixed; boundary=\"" + writer.Boundary() + "\"\n\n" +
+		buffer.String(), nil
 }
 
 // UserData template.
