@@ -16,15 +16,30 @@ limitations under the License.
 
 package plugins
 
-import "context"
+import (
+	"context"
+
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+)
 
 type Driver string
 
+const Tinkerbell Driver = "tinkerbell"
+
+type CloudConfigSettings struct {
+	Token       string
+	Namespace   string
+	SecretName  string
+	ClusterHost string
+}
+
 // PluginDriver manages the communications between the machine controller cloud provider and the bare metal env.
 type PluginDriver interface {
-	GetServer(ctx context.Context, serverID, macAddress, ipAddress string) (Server, error)
-	ProvisionServer(context.Context, Server) (string, error)
-	DeprovisionServer(serverID string) (string, error)
+	GetServer(context.Context, types.UID, runtime.RawExtension) (Server, error)
+	Validate(runtime.RawExtension) error
+	ProvisionServer(context.Context, types.UID, *CloudConfigSettings, runtime.RawExtension) (Server, error)
+	DeprovisionServer(context.Context, types.UID) error
 }
 
 // Server represents the server/instance which exists in the bare metal env.
