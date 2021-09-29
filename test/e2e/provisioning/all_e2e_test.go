@@ -53,6 +53,7 @@ func init() {
 const (
 	DOManifest                        = "./testdata/machinedeployment-digitalocean.yaml"
 	AWSManifest                       = "./testdata/machinedeployment-aws.yaml"
+	AWSSpotInstanceManifest           = "./testdata/machinedeployment-aws-spot-instances.yaml"
 	AWSManifestARM                    = "./testdata/machinedeployment-aws-arm-machines.yaml"
 	AWSEBSEncryptedManifest           = "./testdata/machinedeployment-aws-ebs-encryption-enabled.yaml"
 	AzureManifest                     = "./testdata/machinedeployment-azure.yaml"
@@ -285,7 +286,8 @@ func TestKubevirtProvisioningE2E(t *testing.T) {
 		t.Fatalf("Unable to run kubevirt tests, KUBEVIRT_E2E_TESTS_KUBECONFIG must be set")
 	}
 
-	selector := Not(OsSelector("sles", "flatcar", "rhel"))
+	selector := OsSelector("ubuntu", "centos", "flatcar")
+
 	params := []string{
 		fmt.Sprintf("<< KUBECONFIG >>=%s", kubevirtKubeconfig),
 	}
@@ -342,7 +344,7 @@ func TestOpenstackProvisioningE2E(t *testing.T) {
 		fmt.Sprintf("<< NETWORK_NAME >>=%s", osNetwork),
 	}
 
-	selector := Not(OsSelector("sles", "rhel"))
+	selector := Not(OsSelector("sles", "rhel", "amzn2"))
 	runScenarios(t, selector, params, OSManifest, fmt.Sprintf("os-%s", *testRunIdentifier))
 }
 
@@ -359,7 +361,8 @@ func TestDigitalOceanProvisioningE2E(t *testing.T) {
 		t.Fatal("unable to run the test suite, DO_E2E_TESTS_TOKEN environment variable cannot be empty")
 	}
 
-	selector := Not(OsSelector("sles", "rhel", "flatcar"))
+	selector := OsSelector("ubuntu", "centos")
+
 	// act
 	params := []string{fmt.Sprintf("<< DIGITALOCEAN_TOKEN >>=%s", doToken)}
 	runScenarios(t, selector, params, DOManifest, fmt.Sprintf("do-%s", *testRunIdentifier))
@@ -383,6 +386,26 @@ func TestAWSProvisioningE2E(t *testing.T) {
 		fmt.Sprintf("<< PROVISIONING_UTILITY >>=%s", flatcar.Ignition),
 	}
 	runScenarios(t, selector, params, AWSManifest, fmt.Sprintf("aws-%s", *testRunIdentifier))
+}
+
+// TestAWSSpotInstanceProvisioning - a test suite that exercises AWS provider
+// by requesting spot nodes with different combination of container runtime type, container runtime version and the OS flavour.
+func TestAWSSpotInstanceProvisioningE2E(t *testing.T) {
+	t.Parallel()
+
+	// test data
+	awsKeyID := os.Getenv("AWS_E2E_TESTS_KEY_ID")
+	awsSecret := os.Getenv("AWS_E2E_TESTS_SECRET")
+	if len(awsKeyID) == 0 || len(awsSecret) == 0 {
+		t.Fatal("unable to run the test suite, AWS_E2E_TESTS_KEY_ID or AWS_E2E_TESTS_SECRET environment variables cannot be empty")
+	}
+	selector := Not(OsSelector("sles"))
+	// act
+	params := []string{fmt.Sprintf("<< AWS_ACCESS_KEY_ID >>=%s", awsKeyID),
+		fmt.Sprintf("<< AWS_SECRET_ACCESS_KEY >>=%s", awsSecret),
+		fmt.Sprintf("<< PROVISIONING_UTILITY >>=%s", flatcar.Ignition),
+	}
+	runScenarios(t, selector, params, AWSSpotInstanceManifest, fmt.Sprintf("aws-%s", *testRunIdentifier))
 }
 
 // TestAWSARMProvisioningE2E - a test suite that exercises AWS provider for arm machines
@@ -538,7 +561,7 @@ func TestAzureProvisioningE2E(t *testing.T) {
 		t.Fatal("unable to run the test suite, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET environment variables cannot be empty")
 	}
 
-	selector := Not(OsSelector("sles"))
+	selector := Not(OsSelector("sles", "amzn2"))
 	// act
 	params := []string{
 		fmt.Sprintf("<< AZURE_TENANT_ID >>=%s", azureTenantID),
@@ -639,7 +662,7 @@ func TestHetznerProvisioningE2E(t *testing.T) {
 		t.Fatal("unable to run the test suite, HZ_E2E_TOKEN environment variable cannot be empty")
 	}
 
-	selector := Not(OsSelector("sles", "rhel", "flatcar"))
+	selector := OsSelector("ubuntu", "centos")
 
 	// act
 	params := []string{fmt.Sprintf("<< HETZNER_TOKEN >>=%s", hzToken)}
@@ -743,9 +766,9 @@ func getVSphereTestParams(t *testing.T) []string {
 func TestVsphereProvisioningE2E(t *testing.T) {
 	t.Parallel()
 
-	selector := Not(OsSelector("sles", "rhel"))
-
+	selector := Not(OsSelector("sles", "rhel", "amzn2"))
 	params := getVSphereTestParams(t)
+
 	runScenarios(t, selector, params, VSPhereManifest, fmt.Sprintf("vs-%s", *testRunIdentifier))
 }
 
@@ -754,7 +777,7 @@ func TestVsphereProvisioningE2E(t *testing.T) {
 func TestVsphereDatastoreClusterProvisioningE2E(t *testing.T) {
 	t.Parallel()
 
-	selector := Not(OsSelector("sles", "rhel", "flatcar", "rhel"))
+	selector := OsSelector("ubuntu", "centos")
 
 	params := getVSphereTestParams(t)
 	runScenarios(t, selector, params, VSPhereDSCManifest, fmt.Sprintf("vs-dsc-%s", *testRunIdentifier))

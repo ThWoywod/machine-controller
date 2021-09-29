@@ -72,19 +72,21 @@ type config struct {
 	ClientID       string
 	ClientSecret   string
 
-	Location          string
-	ResourceGroup     string
-	VNetResourceGroup string
-	VMSize            string
-	VNetName          string
-	SubnetName        string
-	RouteTableName    string
-	AvailabilitySet   string
-	SecurityGroupName string
-	ImageID           string
-	Zones             []string
-	ImagePlan         *compute.Plan
-	ImageReference    *compute.ImageReference
+	Location              string
+	ResourceGroup         string
+	VNetResourceGroup     string
+	VMSize                string
+	VNetName              string
+	SubnetName            string
+	LoadBalancerSku       string
+	RouteTableName        string
+	AvailabilitySet       string
+	AssignAvailabilitySet *bool
+	SecurityGroupName     string
+	ImageID               string
+	Zones                 []string
+	ImagePlan             *compute.Plan
+	ImageReference        *compute.ImageReference
 
 	OSDiskSize   int32
 	DataDiskSize int32
@@ -119,7 +121,7 @@ var imageReferences = map[providerconfigtypes.OperatingSystem]compute.ImageRefer
 	providerconfigtypes.OperatingSystemCentOS: {
 		Publisher: to.StringPtr("OpenLogic"),
 		Offer:     to.StringPtr("CentOS"),
-		Sku:       to.StringPtr("7-CI"), // https://docs.microsoft.com/en-us/azure/virtual-machines/linux/using-cloud-init
+		Sku:       to.StringPtr("7_9"), // https://docs.microsoft.com/en-us/azure/virtual-machines/linux/using-cloud-init
 		Version:   to.StringPtr("latest"),
 	},
 	providerconfigtypes.OperatingSystemUbuntu: {
@@ -133,9 +135,9 @@ var imageReferences = map[providerconfigtypes.OperatingSystem]compute.ImageRefer
 	},
 	providerconfigtypes.OperatingSystemRHEL: {
 		Publisher: to.StringPtr("RedHat"),
-		Offer:     to.StringPtr("RHEL"),
-		Sku:       to.StringPtr("7-RAW-CI"),
-		Version:   to.StringPtr("7.7.2019081601"),
+		Offer:     to.StringPtr("rhel-byos"),
+		Sku:       to.StringPtr("rhel-lvm83"),
+		Version:   to.StringPtr("8.3.20201109"),
 	},
 	providerconfigtypes.OperatingSystemFlatcar: {
 		Publisher: to.StringPtr("kinvolk"),
@@ -150,6 +152,11 @@ var osPlans = map[providerconfigtypes.OperatingSystem]*compute.Plan{
 		Name:      pointer.StringPtr("stable"),
 		Publisher: pointer.StringPtr("kinvolk"),
 		Product:   pointer.StringPtr("flatcar-container-linux"),
+	},
+	providerconfigtypes.OperatingSystemRHEL: {
+		Name:      pointer.StringPtr("rhel-lvm83"),
+		Publisher: pointer.StringPtr("redhat"),
+		Product:   pointer.StringPtr("rhel-byos"),
 	},
 }
 
@@ -257,6 +264,11 @@ func (p *provider) getConfig(s v1alpha1.ProviderSpec) (*config, *providerconfigt
 		return nil, nil, fmt.Errorf("failed to get the value of \"subnetName\" field, error = %v", err)
 	}
 
+	c.LoadBalancerSku, err = p.configVarResolver.GetConfigVarStringValue(rawCfg.LoadBalancerSku)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get the value of \"loadBalancerSku\" field, error = %v", err)
+	}
+
 	c.RouteTableName, err = p.configVarResolver.GetConfigVarStringValue(rawCfg.RouteTableName)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get the value of \"routeTableName\" field, error = %v", err)
@@ -266,6 +278,8 @@ func (p *provider) getConfig(s v1alpha1.ProviderSpec) (*config, *providerconfigt
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get the value of \"assignPublicIP\" field, error = %v", err)
 	}
+
+	c.AssignAvailabilitySet = rawCfg.AssignAvailabilitySet
 
 	c.AvailabilitySet, err = p.configVarResolver.GetConfigVarStringValue(rawCfg.AvailabilitySet)
 	if err != nil {
@@ -282,7 +296,7 @@ func (p *provider) getConfig(s v1alpha1.ProviderSpec) (*config, *providerconfigt
 	c.OSDiskSize = rawCfg.OSDiskSize
 	c.DataDiskSize = rawCfg.DataDiskSize
 
-	if rawCfg.ImagePlan != nil {
+	if rawCfg.ImagePlan != nil && rawCfg.ImagePlan.Name != "" {
 		c.ImagePlan = &compute.Plan{
 			Name:      pointer.StringPtr(rawCfg.ImagePlan.Name),
 			Publisher: pointer.StringPtr(rawCfg.ImagePlan.Publisher),
@@ -571,7 +585,8 @@ func (p *provider) Create(machine *v1alpha1.Machine, data *cloudprovidertypes.Pr
 		Zones: &config.Zones,
 	}
 
-	if config.AvailabilitySet != "" {
+	if config.AssignAvailabilitySet == nil && config.AvailabilitySet != "" ||
+		config.AssignAvailabilitySet != nil && *config.AssignAvailabilitySet && config.AvailabilitySet != "" {
 		// Azure expects the full path to the resource
 		asURI := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Compute/availabilitySets/%s", config.SubscriptionID, config.ResourceGroup, config.AvailabilitySet)
 		vmSpec.VirtualMachineProperties.AvailabilitySet = &compute.SubResource{ID: to.StringPtr(asURI)}
@@ -805,6 +820,12 @@ func (p *provider) GetCloudConfig(spec v1alpha1.MachineSpec) (config string, nam
 		return "", "", fmt.Errorf("failed to parse config: %v", err)
 	}
 
+	var avSet string
+	if c.AssignAvailabilitySet == nil && c.AvailabilitySet != "" ||
+		c.AssignAvailabilitySet != nil && *c.AssignAvailabilitySet && c.AvailabilitySet != "" {
+		avSet = c.AvailabilitySet
+	}
+
 	cc := &azuretypes.CloudConfig{
 		Cloud:                      "AZUREPUBLICCLOUD",
 		TenantID:                   c.TenantID,
@@ -816,8 +837,9 @@ func (p *provider) GetCloudConfig(spec v1alpha1.MachineSpec) (config string, nam
 		Location:                   c.Location,
 		VNetName:                   c.VNetName,
 		SubnetName:                 c.SubnetName,
+		LoadBalancerSku:            c.LoadBalancerSku,
 		RouteTableName:             c.RouteTableName,
-		PrimaryAvailabilitySetName: c.AvailabilitySet,
+		PrimaryAvailabilitySetName: avSet,
 		SecurityGroupName:          c.SecurityGroupName,
 		UseInstanceMetadata:        true,
 	}

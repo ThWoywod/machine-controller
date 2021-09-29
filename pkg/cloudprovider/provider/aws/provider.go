@@ -102,6 +102,11 @@ var (
 			owner:       "679593333241",
 			productCode: "aw0evgkw8e5c1q413zgy5pjce",
 		},
+		providerconfigtypes.OperatingSystemAmazonLinux2: {
+			description: "Amazon Linux 2 AMI * x86_64 HVM gp2",
+			// The AWS marketplace ID from Amazon
+			owner: "137112412989",
+		},
 		providerconfigtypes.OperatingSystemUbuntu: {
 			// Be as precise as possible - otherwise we might get a nightly dev build
 			description: "Canonical, Ubuntu, 18.04 LTS, amd64 bionic image build on ????-??-??",
@@ -144,7 +149,6 @@ type Config struct {
 	SubnetID           string
 	SecurityGroupIDs   []string
 	InstanceProfile    string
-	IsSpotInstance     *bool
 	InstanceType       string
 	AMI                string
 	DiskSize           int64
@@ -153,6 +157,11 @@ type Config struct {
 	EBSVolumeEncrypted bool
 	Tags               map[string]string
 	AssignPublicIP     *bool
+
+	IsSpotInstance           *bool
+	SpotMaxPrice             *string
+	SpotPersistentRequest    *bool
+	SpotInterruptionBehavior *string
 }
 
 type amiFilter struct {
@@ -237,20 +246,23 @@ func getDefaultAMIID(client *ec2.EC2, os providerconfigtypes.OperatingSystem, re
 
 func getDefaultRootDevicePath(os providerconfigtypes.OperatingSystem) (string, error) {
 	const (
-		rootDevicePathUbuntuCentOSRHEL = "/dev/sda1"
-		rootDevicePathSLES             = "/dev/xvda"
+		rootDevicePathSDA  = "/dev/sda1"
+		rootDevicePathXVDA = "/dev/xvda"
 	)
+
 	switch os {
 	case providerconfigtypes.OperatingSystemUbuntu:
-		return rootDevicePathUbuntuCentOSRHEL, nil
+		return rootDevicePathSDA, nil
 	case providerconfigtypes.OperatingSystemCentOS:
-		return rootDevicePathUbuntuCentOSRHEL, nil
+		return rootDevicePathSDA, nil
 	case providerconfigtypes.OperatingSystemSLES:
-		return rootDevicePathSLES, nil
+		return rootDevicePathXVDA, nil
 	case providerconfigtypes.OperatingSystemRHEL:
-		return rootDevicePathUbuntuCentOSRHEL, nil
+		return rootDevicePathSDA, nil
 	case providerconfigtypes.OperatingSystemFlatcar:
-		return rootDevicePathSLES, nil
+		return rootDevicePathXVDA, nil
+	case providerconfigtypes.OperatingSystemAmazonLinux2:
+		return rootDevicePathXVDA, nil
 	}
 
 	return "", fmt.Errorf("no default root path found for %s operating system", os)
@@ -340,8 +352,27 @@ func (p *provider) getConfig(s v1alpha1.ProviderSpec) (*Config, *providerconfigt
 		return nil, nil, nil, fmt.Errorf("failed to get ebsVolumeEncrypted value: %v", err)
 	}
 	c.Tags = rawConfig.Tags
-	c.IsSpotInstance = rawConfig.IsSpotInstance
 	c.AssignPublicIP = rawConfig.AssignPublicIP
+	c.IsSpotInstance = rawConfig.IsSpotInstance
+	if rawConfig.SpotInstanceConfig != nil && c.IsSpotInstance != nil && *c.IsSpotInstance {
+		maxPrice, err := p.configVarResolver.GetConfigVarStringValue(rawConfig.SpotInstanceConfig.MaxPrice)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		c.SpotMaxPrice = pointer.StringPtr(maxPrice)
+
+		persistentRequest, err := p.configVarResolver.GetConfigVarBoolValue(rawConfig.SpotInstanceConfig.PersistentRequest)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		c.SpotPersistentRequest = pointer.BoolPtr(persistentRequest)
+
+		interruptionBehavior, err := p.configVarResolver.GetConfigVarStringValue(rawConfig.SpotInstanceConfig.InterruptionBehavior)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		c.SpotInterruptionBehavior = pointer.StringPtr(interruptionBehavior)
+	}
 
 	return &c, &pconfig, &rawConfig, err
 }
@@ -380,6 +411,12 @@ func (p *provider) AddDefaults(spec v1alpha1.MachineSpec) (v1alpha1.MachineSpec,
 	}
 	if rawConfig.AssignPublicIP == nil {
 		rawConfig.AssignPublicIP = aws.Bool(true)
+	}
+	if rawConfig.IsSpotInstance != nil && *rawConfig.IsSpotInstance {
+		if spec.Labels == nil {
+			spec.Labels = map[string]string{}
+		}
+		spec.Labels["k8c.io/aws-spot"] = "aws-node-termination-handler"
 	}
 	spec.ProviderSpec.Value, err = setProviderSpec(*rawConfig, spec.ProviderSpec)
 	return spec, err
@@ -536,7 +573,27 @@ func (p *provider) Create(machine *v1alpha1.Machine, data *cloudprovidertypes.Pr
 
 	var instanceMarketOptions *ec2.InstanceMarketOptionsRequest
 	if config.IsSpotInstance != nil && *config.IsSpotInstance {
-		instanceMarketOptions = &ec2.InstanceMarketOptionsRequest{MarketType: aws.String(ec2.MarketTypeSpot)}
+		spotOpts := &ec2.SpotMarketOptions{
+			SpotInstanceType: pointer.StringPtr(ec2.SpotInstanceTypeOneTime),
+		}
+
+		if config.SpotMaxPrice != nil && *config.SpotMaxPrice != "" {
+			spotOpts.MaxPrice = config.SpotMaxPrice
+		}
+
+		if config.SpotPersistentRequest != nil && *config.SpotPersistentRequest {
+			spotOpts.SpotInstanceType = pointer.StringPtr(ec2.SpotInstanceTypePersistent)
+			spotOpts.InstanceInterruptionBehavior = pointer.StringPtr(ec2.InstanceInterruptionBehaviorStop)
+
+			if config.SpotInterruptionBehavior != nil && *config.SpotInterruptionBehavior != "" {
+				spotOpts.InstanceInterruptionBehavior = config.SpotInterruptionBehavior
+			}
+		}
+
+		instanceMarketOptions = &ec2.InstanceMarketOptionsRequest{
+			MarketType:  aws.String(ec2.MarketTypeSpot),
+			SpotOptions: spotOpts,
+		}
 	}
 
 	// By default we assign a public IP - We introduced this field later, so we made it a pointer & default to true.
@@ -598,7 +655,7 @@ func (p *provider) Create(machine *v1alpha1.Machine, data *cloudprovidertypes.Pr
 }
 
 func (p *provider) Cleanup(machine *v1alpha1.Machine, _ *cloudprovidertypes.ProviderData) (bool, error) {
-	instance, err := p.get(machine)
+	ec2instance, err := p.get(machine)
 	if err != nil {
 		if err == cloudprovidererrors.ErrInstanceNotFound {
 			return true, nil
@@ -606,7 +663,9 @@ func (p *provider) Cleanup(machine *v1alpha1.Machine, _ *cloudprovidertypes.Prov
 		return false, err
 	}
 
+	//(*Config, *providerconfigtypes.Config, *awstypes.RawConfig, error)
 	config, _, _, err := p.getConfig(machine.Spec.ProviderSpec)
+
 	if err != nil {
 		return false, cloudprovidererrors.TerminalError{
 			Reason:  common.InvalidConfigurationMachineError,
@@ -619,15 +678,31 @@ func (p *provider) Cleanup(machine *v1alpha1.Machine, _ *cloudprovidertypes.Prov
 		return false, err
 	}
 
+	if config.IsSpotInstance != nil && *config.IsSpotInstance &&
+		config.SpotPersistentRequest != nil && *config.SpotPersistentRequest {
+
+		cOut, err := ec2Client.CancelSpotInstanceRequests(&ec2.CancelSpotInstanceRequestsInput{
+			SpotInstanceRequestIds: aws.StringSlice([]string{*ec2instance.instance.SpotInstanceRequestId}),
+		})
+
+		if err != nil {
+			return false, awsErrorToTerminalError(err, "failed to cancel spot instance request")
+		}
+
+		if *cOut.CancelledSpotInstanceRequests[0].State == ec2.CancelSpotInstanceRequestStateCancelled {
+			klog.V(3).Infof("successfully canceled spot instance request %s at aws", *ec2instance.instance.SpotInstanceRequestId)
+		}
+	}
+
 	tOut, err := ec2Client.TerminateInstances(&ec2.TerminateInstancesInput{
-		InstanceIds: aws.StringSlice([]string{instance.ID()}),
+		InstanceIds: aws.StringSlice([]string{ec2instance.ID()}),
 	})
 	if err != nil {
 		return false, awsErrorToTerminalError(err, "failed to terminate instance")
 	}
 
 	if *tOut.TerminatingInstances[0].PreviousState.Name != *tOut.TerminatingInstances[0].CurrentState.Name {
-		klog.V(3).Infof("successfully triggered termination of instance %s at aws", instance.ID())
+		klog.V(3).Infof("successfully triggered termination of instance %s at aws", ec2instance.ID())
 	}
 
 	return false, nil
@@ -866,6 +941,8 @@ func setProviderSpec(rawConfig awstypes.RawConfig, s v1alpha1.ProviderSpec) (*ru
 }
 
 func (p *provider) SetMetricsForMachines(machines v1alpha1.MachineList) error {
+	metricInstancesForMachines.Reset()
+
 	if len(machines.Items) < 1 {
 		return nil
 	}
@@ -891,7 +968,6 @@ func (p *provider) SetMetricsForMachines(machines v1alpha1.MachineList) error {
 			secretAccessKey: config.SecretAccessKey,
 			region:          config.Region,
 		}
-
 	}
 
 	allReservations := []*ec2.Reservation{}

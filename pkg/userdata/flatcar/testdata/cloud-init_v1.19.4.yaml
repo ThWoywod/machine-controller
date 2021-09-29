@@ -157,11 +157,12 @@ coreos:
           --cloud-provider=anexia \
           --cloud-config=/etc/kubernetes/cloud-config \
           --hostname-override=node1 \
-          --dynamic-config-dir=/etc/kubernetes/dynamic-config-dir \
           --exit-on-lock-contention \
           --lock-file=/tmp/kubelet.lock \
           --container-runtime=docker \
           --container-runtime-endpoint=unix:///var/run/dockershim.sock \
+          --dynamic-config-dir=/etc/kubernetes/dynamic-config-dir \
+          --feature-gates=DynamicKubeletConfig=true \
           --node-ip ${KUBELET_NODE_IP}
       ExecStop=-/usr/bin/docker stop %n
       Restart=always
@@ -388,7 +389,7 @@ write_files:
 - path: /etc/docker/daemon.json
   permissions: "0644"
   content: |
-    {"exec-opts":["native.cgroupdriver=systemd"],"storage-driver":"overlay2","log-driver":"json-file","log-opts":{"max-size":"100m"}}
+    {"exec-opts":["native.cgroupdriver=systemd"],"storage-driver":"overlay2","log-driver":"json-file","log-opts":{"max-file":"5","max-size":"10m"}}
 
 - path: /opt/bin/download.sh
   permissions: "0755"
@@ -458,3 +459,13 @@ write_files:
     set -xeuo pipefail
     sysctl --system
     systemctl disable apply-sysctl-settings.service
+
+- path: "/etc/ssh/trusted-user-ca-keys.pem"
+  content: |
+    ssh-rsa AAABBB
+
+- path: "/etc/ssh/sshd_config"
+  content: |
+    TrustedUserCAKeys /etc/ssh/trusted-user-ca-keys.pem
+    CASignatureAlgorithms ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-ed25519,rsa-sha2-512,rsa-sha2-256,ssh-rsa
+  append: true

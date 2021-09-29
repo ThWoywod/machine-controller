@@ -205,10 +205,13 @@ type dockerConfig struct {
 // DockerConfig returns the docker daemon.json.
 func DockerConfig(insecureRegistries, registryMirrors []string) (string, error) {
 	cfg := dockerConfig{
-		ExecOpts:           []string{"native.cgroupdriver=systemd"},
-		StorageDriver:      "overlay2",
-		LogDriver:          "json-file",
-		LogOpts:            map[string]string{"max-size": "100m"},
+		ExecOpts:      []string{"native.cgroupdriver=systemd"},
+		StorageDriver: "overlay2",
+		LogDriver:     "json-file",
+		LogOpts: map[string]string{
+			"max-size": "10m",
+			"max-file": "5",
+		},
 		InsecureRegistries: insecureRegistries,
 		RegistryMirrors:    registryMirrors,
 	}
@@ -260,4 +263,9 @@ else
   echo -e "[Service]\nEnvironment=\"KUBELET_NODE_IP=${DEFAULT_IFC_IP}\"" > /etc/systemd/system/kubelet.service.d/nodeip.conf
 fi
 	`
+}
+
+func SSHConfigAddendum() string {
+	return `TrustedUserCAKeys /etc/ssh/trusted-user-ca-keys.pem
+CASignatureAlgorithms ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-ed25519,rsa-sha2-512,rsa-sha2-256,ssh-rsa`
 }

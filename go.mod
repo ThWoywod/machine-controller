@@ -11,6 +11,7 @@ require (
 	github.com/Azure/go-autorest/autorest/validation v0.3.0 // indirect
 	github.com/BurntSushi/toml v0.3.1
 	github.com/Masterminds/semver v1.5.0
+	github.com/Masterminds/semver/v3 v3.1.0
 	github.com/Masterminds/sprig/v3 v3.1.0
 	github.com/ajeddeloh/go-json v0.0.0-20170920214419-6a2fe990e083 // indirect
 	github.com/ajeddeloh/yaml v0.0.0-20170912190910-6b94386aeefd // indirect
@@ -31,7 +32,7 @@ require (
 	github.com/google/uuid v1.1.2
 	github.com/gophercloud/gophercloud v0.14.0
 	github.com/heptiolabs/healthcheck v0.0.0-20180807145615-6ff867650f40
-	github.com/hetznercloud/hcloud-go v1.23.1
+	github.com/hetznercloud/hcloud-go v1.25.0
 	github.com/linode/linodego v0.24.0
 	github.com/mailru/easyjson v0.7.1 // indirect
 	github.com/packethost/packngo v0.1.1-0.20190410075950-a02c426e4888

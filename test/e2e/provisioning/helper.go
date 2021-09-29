@@ -42,6 +42,7 @@ var (
 	operatingSystems = []providerconfigtypes.OperatingSystem{
 		providerconfigtypes.OperatingSystemUbuntu,
 		providerconfigtypes.OperatingSystemCentOS,
+		providerconfigtypes.OperatingSystemAmazonLinux2,
 		providerconfigtypes.OperatingSystemSLES,
 		providerconfigtypes.OperatingSystemRHEL,
 		providerconfigtypes.OperatingSystemFlatcar,
@@ -146,13 +147,6 @@ func testScenario(t *testing.T, testCase scenario, cloudProvider string, testPar
 		rhelSubscriptionManagerUser := os.Getenv("RHEL_SUBSCRIPTION_MANAGER_USER")
 		rhelSubscriptionManagerPassword := os.Getenv("RHEL_SUBSCRIPTION_MANAGER_PASSWORD")
 		rhsmOfflineToken := os.Getenv("REDHAT_SUBSCRIPTIONS_OFFLINE_TOKEN")
-		if strings.Contains(cloudProvider, string(providerconfigtypes.CloudProviderAzure)) {
-			rhelImageID := os.Getenv("AZURE_RHEL_IMAGE_ID")
-			if rhelImageID == "" {
-				t.Fatalf("Unable to run e2e tests, AZURE_RHEL_IMAGE_ID must be set when rhel is used as an os in Azure")
-			}
-			scenarioParams = append(scenarioParams, fmt.Sprintf("<< IMAGE_ID >>=%s", rhelImageID))
-		}
 
 		if rhelSubscriptionManagerUser == "" || rhelSubscriptionManagerPassword == "" || rhsmOfflineToken == "" {
 			t.Fatalf("Unable to run e2e tests, RHEL_SUBSCRIPTION_MANAGER_USER, RHEL_SUBSCRIPTION_MANAGER_PASSWORD, and " +
@@ -167,13 +161,17 @@ func testScenario(t *testing.T, testCase scenario, cloudProvider string, testPar
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< DATA_DISK_SIZE >>=%v", 0))
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< CUSTOM-IMAGE >>=%v", "rhel-8-1-custom"))
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< AMI >>=%s", "ami-08c04369895785ac4"))
+		scenarioParams = append(scenarioParams, fmt.Sprintf("<< MAX_PRICE >>=%s", "0.08"))
 	} else {
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< OS_DISK_SIZE >>=%v", 30))
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< DATA_DISK_SIZE >>=%v", 30))
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< AMI >>=%s", ""))
-		scenarioParams = append(scenarioParams, fmt.Sprintf("<< IMAGE_ID >>=%s", ""))
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< DISK_SIZE >>=%v", 25))
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< CUSTOM-IMAGE >>=%v", ""))
+		scenarioParams = append(scenarioParams, fmt.Sprintf("<< RHEL_SUBSCRIPTION_MANAGER_USER >>=%s", ""))
+		scenarioParams = append(scenarioParams, fmt.Sprintf("<< RHEL_SUBSCRIPTION_MANAGER_PASSWORD >>=%s", ""))
+		scenarioParams = append(scenarioParams, fmt.Sprintf("<< REDHAT_SUBSCRIPTIONS_OFFLINE_TOKEN >>=%s", ""))
+		scenarioParams = append(scenarioParams, fmt.Sprintf("<< MAX_PRICE >>=%s", "0.02"))
 	}
 
 	// only used by OpenStack scenarios

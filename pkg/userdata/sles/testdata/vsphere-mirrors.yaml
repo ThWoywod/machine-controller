@@ -174,10 +174,11 @@ write_files:
       --cloud-provider=vsphere \
       --cloud-config=/etc/kubernetes/cloud-config \
       --hostname-override=node1 \
-      --dynamic-config-dir=/etc/kubernetes/dynamic-config-dir \
       --exit-on-lock-contention \
       --lock-file=/tmp/kubelet.lock \
       --pod-infra-container-image=192.168.100.100:5000/kubernetes/pause:v3.1 \
+      --dynamic-config-dir=/etc/kubernetes/dynamic-config-dir \
+      --feature-gates=DynamicKubeletConfig=true \
       --node-ip ${KUBELET_NODE_IP}
 
     [Install]
@@ -348,7 +349,7 @@ write_files:
 - path: /etc/docker/daemon.json
   permissions: "0644"
   content: |
-    {"exec-opts":["native.cgroupdriver=systemd"],"storage-driver":"overlay2","log-driver":"json-file","log-opts":{"max-size":"100m"},"registry-mirrors":["https://registry.docker-cn.com"]}
+    {"exec-opts":["native.cgroupdriver=systemd"],"storage-driver":"overlay2","log-driver":"json-file","log-opts":{"max-file":"5","max-size":"10m"},"registry-mirrors":["https://registry.docker-cn.com"]}
 
 - path: /etc/systemd/system/kubelet-healthcheck.service
   permissions: "0644"

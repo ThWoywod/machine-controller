@@ -94,11 +94,11 @@ write_files:
     EOF
 
     yum install -y \
-        docker-ce-19.03.13 \
-        docker-ce-cli-19.03.13 \
-        containerd.io-1.4.3 \
+        docker-ce-cli-19.03* \
+        containerd.io-1.4* \
+        docker-ce-19.03* \
         yum-plugin-versionlock
-    yum versionlock add docker-ce-* containerd.io
+    yum versionlock add docker-ce* containerd.io
 
     systemctl daemon-reload
     systemctl enable --now docker
@@ -201,11 +201,12 @@ write_files:
       --network-plugin=cni \
       --cert-dir=/etc/kubernetes/pki \
       --cloud-provider=external \
-      --dynamic-config-dir=/etc/kubernetes/dynamic-config-dir \
       --exit-on-lock-contention \
       --lock-file=/tmp/kubelet.lock \
       --container-runtime=docker \
       --container-runtime-endpoint=unix:///var/run/dockershim.sock \
+      --dynamic-config-dir=/etc/kubernetes/dynamic-config-dir \
+      --feature-gates=DynamicKubeletConfig=true \
       --node-ip ${KUBELET_NODE_IP}
 
     [Install]
@@ -367,7 +368,7 @@ write_files:
 - path: /etc/docker/daemon.json
   permissions: "0644"
   content: |
-    {"exec-opts":["native.cgroupdriver=systemd"],"storage-driver":"overlay2","log-driver":"json-file","log-opts":{"max-size":"100m"}}
+    {"exec-opts":["native.cgroupdriver=systemd"],"storage-driver":"overlay2","log-driver":"json-file","log-opts":{"max-file":"5","max-size":"10m"}}
 
 - path: /etc/systemd/system/kubelet-healthcheck.service
   permissions: "0644"

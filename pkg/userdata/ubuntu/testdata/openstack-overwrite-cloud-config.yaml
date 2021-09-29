@@ -101,10 +101,10 @@ write_files:
     EOF
 
     apt-get install -y \
-        containerd.io=1.4.3* \
-        docker-ce=5:19.03.13* \
-        docker-ce-cli=5:19.03.13*
-    apt-mark hold docker-ce docker-ce-cli containerd.io
+        containerd.io=1.4* \
+        docker-ce-cli=5:19.03* \
+        docker-ce=5:19.03*
+    apt-mark hold docker-ce* containerd.io
 
     systemctl daemon-reload
     systemctl enable --now docker
@@ -208,11 +208,12 @@ write_files:
       --cloud-provider=openstack \
       --cloud-config=/etc/kubernetes/cloud-config \
       --hostname-override=node1 \
-      --dynamic-config-dir=/etc/kubernetes/dynamic-config-dir \
       --exit-on-lock-contention \
       --lock-file=/tmp/kubelet.lock \
       --container-runtime=docker \
       --container-runtime-endpoint=unix:///var/run/dockershim.sock \
+      --dynamic-config-dir=/etc/kubernetes/dynamic-config-dir \
+      --feature-gates=DynamicKubeletConfig=true \
       --node-ip ${KUBELET_NODE_IP}
 
     [Install]
@@ -333,7 +334,7 @@ write_files:
 - path: /etc/docker/daemon.json
   permissions: "0644"
   content: |
-    {"exec-opts":["native.cgroupdriver=systemd"],"storage-driver":"overlay2","log-driver":"json-file","log-opts":{"max-size":"100m"}}
+    {"exec-opts":["native.cgroupdriver=systemd"],"storage-driver":"overlay2","log-driver":"json-file","log-opts":{"max-file":"5","max-size":"10m"}}
 
 - path: "/etc/kubernetes/kubelet.conf"
   content: |

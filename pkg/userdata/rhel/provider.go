@@ -204,7 +204,9 @@ write_files:
 {{- /*  https://bugs.launchpad.net/cloud-init/+bug/1662542 */}}
     hostnamectl set-hostname {{ .MachineSpec.Name }}
     {{ end }}
-
+    {{ if eq .CloudProviderName "azure" }}
+    yum update -y --disablerepo='*' --enablerepo='*microsoft*'
+    {{ end }}
     yum install -y \
       device-mapper-persistent-data \
       lvm2 \
@@ -300,6 +302,18 @@ write_files:
   permissions: "0644"
   content: |
 {{ kubeletHealthCheckSystemdUnit | indent 4 }}
+
+{{- with .ProviderSpec.CAPublicKey }}
+
+- path: "/etc/ssh/trusted-user-ca-keys.pem"
+  content: |
+{{ . | indent 4 }}
+
+- path: "/etc/ssh/sshd_config"
+  content: |
+{{ sshConfigAddendum | indent 4 }}
+  append: true
+{{- end }}
 
 rh_subscription:
 {{- if .OSConfig.RHELUseSatelliteServer }}
