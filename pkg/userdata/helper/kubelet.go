@@ -19,16 +19,24 @@ package helper
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"text/template"
 
 	"github.com/Masterminds/semver/v3"
 
+	"github.com/kubermatic/machine-controller/pkg/apis/cluster/common"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog"
 	kubeletv1b1 "k8s.io/kubelet/config/v1beta1"
 	"k8s.io/utils/pointer"
 	kyaml "sigs.k8s.io/yaml"
+)
+
+const (
+	defaultKubeletContainerLogMaxSize = "100Mi"
 )
 
 const (
@@ -42,6 +50,8 @@ const (
 {{- end }}
 {{- if and (.Hostname) (ne .CloudProvider "aws") }}
 --hostname-override={{ .Hostname }} \
+{{- else if and (eq .CloudProvider "aws") (.IsExternal) }}
+--hostname-override=${KUBELET_HOSTNAME} \
 {{- end }}
 --exit-on-lock-contention \
 --lock-file=/tmp/kubelet.lock \
@@ -80,10 +90,35 @@ ExecStart=/opt/bin/kubelet $KUBELET_EXTRA_ARGS \
 
 [Install]
 WantedBy=multi-user.target`
+
+	containerRuntimeHealthCheckSystemdUnitTpl = `[Unit]
+Requires={{ .ContainerRuntime }}.service
+After={{ .ContainerRuntime }}.service
+
+[Service]
+ExecStart=/opt/bin/health-monitor.sh container-runtime
+
+[Install]
+WantedBy=multi-user.target`
 )
 
 const cpFlags = `--cloud-provider=%s \
 --cloud-config=/etc/kubernetes/cloud-config`
+
+// List of allowed TLS cipher suites for kubelet
+var kubeletTLSCipherSuites = []string{
+	// TLS 1.3 cipher suites
+	"TLS_AES_128_GCM_SHA256",
+	"TLS_AES_256_GCM_SHA384",
+	"TLS_CHACHA20_POLY1305_SHA256",
+	// TLS 1.0 - 1.2 cipher suites
+	"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+	"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+	"TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305",
+	"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+	"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+	"TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305",
+}
 
 // CloudProviderFlags returns --cloud-provider and --cloud-config flags
 func CloudProviderFlags(cpName string, external bool) (string, error) {
@@ -135,7 +170,7 @@ func KubeletSystemdUnit(containerRuntime, kubeletVersion, cloudProvider, hostnam
 }
 
 // kubeletConfiguration returns marshaled kubelet.config.k8s.io/v1beta1 KubeletConfiguration
-func kubeletConfiguration(clusterDomain string, clusterDNS []net.IP, featureGates map[string]bool) (string, error) {
+func kubeletConfiguration(clusterDomain string, clusterDNS []net.IP, featureGates map[string]bool, kubeletConfigs map[string]string, containerRuntime string) (string, error) {
 	clusterDNSstr := make([]string, 0, len(clusterDNS))
 	for _, ip := range clusterDNS {
 		clusterDNSstr = append(clusterDNSstr, ip.String())
@@ -171,7 +206,57 @@ func kubeletConfiguration(clusterDomain string, clusterDNS []net.IP, featureGate
 		StaticPodPath:         "/etc/kubernetes/manifests",
 		KubeReserved:          map[string]string{"cpu": "200m", "memory": "200Mi", "ephemeral-storage": "1Gi"},
 		SystemReserved:        map[string]string{"cpu": "200m", "memory": "200Mi", "ephemeral-storage": "1Gi"},
+		EvictionHard:          map[string]string{"memory.available": "100Mi", "nodefs.available": "10%", "nodefs.inodesFree": "5%", "imagefs.available": "15%"},
 		VolumePluginDir:       "/var/lib/kubelet/volumeplugins",
+		TLSCipherSuites:       kubeletTLSCipherSuites,
+		ContainerLogMaxSize:   defaultKubeletContainerLogMaxSize,
+	}
+
+	if kubeReserved, ok := kubeletConfigs[common.KubeReservedKubeletConfig]; ok {
+		for _, krPair := range strings.Split(kubeReserved, ",") {
+			krKV := strings.SplitN(krPair, "=", 2)
+			if len(krKV) != 2 {
+				continue
+			}
+			cfg.KubeReserved[krKV[0]] = krKV[1]
+		}
+	}
+
+	if systemReserved, ok := kubeletConfigs[common.SystemReservedKubeletConfig]; ok {
+		for _, srPair := range strings.Split(systemReserved, ",") {
+			srKV := strings.SplitN(srPair, "=", 2)
+			if len(srKV) != 2 {
+				continue
+			}
+			cfg.SystemReserved[srKV[0]] = srKV[1]
+		}
+	}
+
+	if evictionHard, ok := kubeletConfigs[common.EvictionHardKubeletConfig]; ok {
+		for _, ehPair := range strings.Split(evictionHard, ",") {
+			ehKV := strings.SplitN(ehPair, "<", 2)
+			if len(ehKV) != 2 {
+				continue
+			}
+			cfg.EvictionHard[ehKV[0]] = ehKV[1]
+		}
+	}
+
+	if containerLogMaxSize, ok := kubeletConfigs[common.ContainerLogMaxSizeKubeletConfig]; ok {
+		cfg.ContainerLogMaxSize = containerLogMaxSize
+	}
+	if containerLogMaxFiles, ok := kubeletConfigs[common.ContainerLogMaxFilesKubeletConfig]; ok {
+		maxFiles, err := strconv.Atoi(containerLogMaxFiles)
+		if err != nil || maxFiles < 0 {
+			// Instead of breaking the workflow, just print a warning and skip the configuration
+			klog.Warningf("Skipping invalid ContainerLogMaxSize value %v for Kubelet configuration", containerLogMaxFiles)
+		} else {
+			cfg.ContainerLogMaxFiles = pointer.Int32Ptr(int32(maxFiles))
+		}
+	}
+
+	if enabled, ok := featureGates["SeccompDefault"]; ok && enabled {
+		cfg.SeccompDefault = pointer.Bool(true)
 	}
 
 	buf, err := kyaml.Marshal(cfg)
@@ -252,14 +337,21 @@ WantedBy=multi-user.target
 }
 
 // ContainerRuntimeHealthCheckSystemdUnit container-runtime health checking systemd unit
-func ContainerRuntimeHealthCheckSystemdUnit() string {
-	return `[Unit]
-Requires=docker.service
-After=docker.service
+func ContainerRuntimeHealthCheckSystemdUnit(containerRuntime string) (string, error) {
+	tmpl, err := template.New("container-runtime-healthcheck-systemd-unit").Funcs(TxtFuncMap()).Parse(containerRuntimeHealthCheckSystemdUnitTpl)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse container-runtime-healthcheck-systemd-unit template: %v", err)
+	}
 
-[Service]
-ExecStart=/opt/bin/health-monitor.sh container-runtime
+	data := struct {
+		ContainerRuntime string
+	}{
+		ContainerRuntime: containerRuntime,
+	}
 
-[Install]
-WantedBy=multi-user.target`
+	var buf strings.Builder
+	if err = tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("failed to execute container-runtime-healthcheck-systemd-unit template: %w", err)
+	}
+	return buf.String(), nil
 }

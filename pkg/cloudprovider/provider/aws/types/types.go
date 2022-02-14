@@ -17,12 +17,16 @@ limitations under the License.
 package types
 
 import (
+	"github.com/kubermatic/machine-controller/pkg/jsonutil"
 	providerconfigtypes "github.com/kubermatic/machine-controller/pkg/providerconfig/types"
 )
 
 type RawConfig struct {
 	AccessKeyID     providerconfigtypes.ConfigVarString `json:"accessKeyId,omitempty"`
 	SecretAccessKey providerconfigtypes.ConfigVarString `json:"secretAccessKey,omitempty"`
+
+	AssumeRoleARN        providerconfigtypes.ConfigVarString `json:"assumeRoleARN,omitempty"`
+	AssumeRoleExternalID providerconfigtypes.ConfigVarString `json:"assumeRoleExternalID,omitempty"`
 
 	Region             providerconfigtypes.ConfigVarString   `json:"region"`
 	AvailabilityZone   providerconfigtypes.ConfigVarString   `json:"availabilityZone,omitempty"`
@@ -47,4 +51,19 @@ type SpotInstanceConfig struct {
 	MaxPrice             providerconfigtypes.ConfigVarString `json:"maxPrice,omitempty"`
 	PersistentRequest    providerconfigtypes.ConfigVarBool   `json:"persistentRequest,omitempty"`
 	InterruptionBehavior providerconfigtypes.ConfigVarString `json:"interruptionBehavior,omitempty"`
+}
+
+// CPUArchitecture defines processor architectures returned by the AWS API
+type CPUArchitecture string
+
+const (
+	CPUArchitectureARM64  CPUArchitecture = "arm64"
+	CPUArchitectureX86_64 CPUArchitecture = "x86_64"
+	CPUArchitectureI386   CPUArchitecture = "i386"
+)
+
+func GetConfig(pconfig providerconfigtypes.Config) (*RawConfig, error) {
+	rawConfig := &RawConfig{}
+
+	return rawConfig, jsonutil.StrictUnmarshal(pconfig.CloudProviderSpec.Raw, rawConfig)
 }

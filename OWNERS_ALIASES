@@ -2,12 +2,19 @@
 
 aliases:
   machine-controller-maintainers:
-    - irozzo-1A
+    - ahmedwaleedmalik
+    - embik
     - kron4eg
+    - mfranczy
     - moadqassem
     - moelsayed
     - themue
-    - xrstf
     - xmudrii
+    - xrstf
     - youssefazrak
-    - mfranczy
+
+  # Temporary SIG to oversee changes in userdata and cloudprovider sub-directories
+  # This SIG is responsible for ensuring that OSM and machine-controller are in sync
+  sig-osm:
+    - ahmedwaleedmalik
+    - moadqassem

@@ -27,7 +27,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/Masterminds/semver"
+	"github.com/Masterminds/semver/v3"
 
 	clusterv1alpha1 "github.com/kubermatic/machine-controller/pkg/apis/cluster/v1alpha1"
 	"github.com/kubermatic/machine-controller/pkg/apis/plugin"
@@ -93,7 +93,7 @@ kPe6XoSbiLm/kxk32T0=
 )
 
 const (
-	defaultVersion = "1.20.1"
+	defaultVersion = "1.22.5"
 )
 
 type fakeCloudConfigProvider struct {
@@ -118,18 +118,18 @@ type userDataTestCase struct {
 	externalCloudProvider bool
 	httpProxy             string
 	noProxy               string
-	insecureRegistries    []string
-	registryMirrors       []string
+	insecureRegistries    string
+	registryMirrors       string
 	pauseImage            string
 	containerruntime      string
 }
 
 func simpleVersionTests() []userDataTestCase {
 	versions := []*semver.Version{
-		semver.MustParse("v1.17.16"),
-		semver.MustParse("v1.18.14"),
-		semver.MustParse("v1.19.4"),
-		semver.MustParse("v1.20.1"),
+		semver.MustParse("v1.20.14"),
+		semver.MustParse("v1.21.8"),
+		semver.MustParse("v1.22.5"),
+		semver.MustParse("v1.23.0"),
 	}
 
 	var tests []userDataTestCase
@@ -350,7 +350,7 @@ func TestUserDataGeneration(t *testing.T) {
 			},
 			httpProxy:       "http://192.168.100.100:3128",
 			noProxy:         "192.168.1.0",
-			registryMirrors: []string{"https://registry.docker-cn.com"},
+			registryMirrors: "https://registry.docker-cn.com",
 			pauseImage:      "192.168.100.100:5000/kubernetes/pause:v3.1",
 		},
 		{
@@ -380,7 +380,7 @@ func TestUserDataGeneration(t *testing.T) {
 			},
 			httpProxy:          "http://192.168.100.100:3128",
 			noProxy:            "192.168.1.0",
-			insecureRegistries: []string{"192.168.100.100:5000", "10.0.0.1:5000"},
+			insecureRegistries: "192.168.100.100:5000, 10.0.0.1:5000",
 			pauseImage:         "192.168.100.100:5000/kubernetes/pause:v3.1",
 		},
 		{
@@ -437,22 +437,29 @@ func TestUserDataGeneration(t *testing.T) {
 				t.Fatalf("failed to get cloud config: %v", err)
 			}
 
+			containerRuntimeOpts := containerruntime.Opts{
+				ContainerRuntime:   test.containerruntime,
+				InsecureRegistries: test.insecureRegistries,
+				RegistryMirrors:    test.registryMirrors,
+			}
+			containerRuntimeConfig, err := containerruntime.BuildConfig(containerRuntimeOpts)
+			if err != nil {
+				t.Fatalf("failed to generate container runtime config: %v", err)
+			}
+
 			req := plugin.UserDataRequest{
-				MachineSpec:           test.spec,
-				Kubeconfig:            kubeconfig,
-				CloudConfig:           cloudConfig,
-				CloudProviderName:     cloudProviderName,
-				DNSIPs:                test.DNSIPs,
-				ExternalCloudProvider: test.externalCloudProvider,
-				HTTPProxy:             test.httpProxy,
-				NoProxy:               test.noProxy,
-				PauseImage:            test.pauseImage,
-				KubeletFeatureGates:   kubeletFeatureGates,
-				ContainerRuntime: containerruntime.Get(
-					test.containerruntime,
-					containerruntime.WithInsecureRegistries(test.insecureRegistries),
-					containerruntime.WithRegistryMirrors(test.registryMirrors),
-				),
+				MachineSpec:              test.spec,
+				Kubeconfig:               kubeconfig,
+				CloudConfig:              cloudConfig,
+				CloudProviderName:        cloudProviderName,
+				KubeletCloudProviderName: cloudProviderName,
+				DNSIPs:                   test.DNSIPs,
+				ExternalCloudProvider:    test.externalCloudProvider,
+				HTTPProxy:                test.httpProxy,
+				NoProxy:                  test.noProxy,
+				PauseImage:               test.pauseImage,
+				KubeletFeatureGates:      kubeletFeatureGates,
+				ContainerRuntime:         containerRuntimeConfig,
 			}
 			s, err := provider.UserData(req)
 			if err != nil {

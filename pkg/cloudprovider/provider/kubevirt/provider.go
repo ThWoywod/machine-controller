@@ -18,18 +18,17 @@ package kubevirt
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
-	kubevirtv1 "kubevirt.io/client-go/api/v1"
-	cdi "kubevirt.io/containerized-data-importer/pkg/apis/core/v1alpha1"
+	kubevirtv1 "kubevirt.io/api/core/v1"
+	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 
 	"github.com/kubermatic/machine-controller/pkg/apis/cluster/common"
-	"github.com/kubermatic/machine-controller/pkg/apis/cluster/v1alpha1"
+	clusterv1alpha1 "github.com/kubermatic/machine-controller/pkg/apis/cluster/v1alpha1"
 	cloudprovidererrors "github.com/kubermatic/machine-controller/pkg/cloudprovider/errors"
 	"github.com/kubermatic/machine-controller/pkg/cloudprovider/instance"
 	kubevirttypes "github.com/kubermatic/machine-controller/pkg/cloudprovider/provider/kubevirt/types"
@@ -45,13 +44,15 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog"
 	utilpointer "k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func init() {
-	// Workaround until we have https://github.com/kubevirt/kubevirt/pull/2841
-	metav1.AddToGroupVersion(scheme.Scheme, kubevirtv1.GroupVersion)
+	if err := kubevirtv1.AddToScheme(scheme.Scheme); err != nil {
+		klog.Fatalf("failed to add kubevirtv1 to scheme: %v", err)
+	}
 }
 
 var supportedOS = map[providerconfigtypes.OperatingSystem]*struct{}{
@@ -114,12 +115,12 @@ func (k *kubeVirtServer) Status() instance.Status {
 
 var _ instance.Instance = &kubeVirtServer{}
 
-func (p *provider) getConfig(s v1alpha1.ProviderSpec) (*Config, *providerconfigtypes.Config, error) {
-	if s.Value == nil {
+func (p *provider) getConfig(provSpec clusterv1alpha1.ProviderSpec) (*Config, *providerconfigtypes.Config, error) {
+	if provSpec.Value == nil {
 		return nil, nil, fmt.Errorf("machine.spec.providerconfig.value is nil")
 	}
-	pconfig := providerconfigtypes.Config{}
-	err := json.Unmarshal(s.Value.Raw, &pconfig)
+
+	pconfig, err := providerconfigtypes.GetConfig(provSpec)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -128,10 +129,11 @@ func (p *provider) getConfig(s v1alpha1.ProviderSpec) (*Config, *providerconfigt
 		return nil, nil, errors.New("operatingSystemSpec in the MachineDeployment cannot be empty")
 	}
 
-	rawConfig := kubevirttypes.RawConfig{}
-	if err = json.Unmarshal(pconfig.CloudProviderSpec.Raw, &rawConfig); err != nil {
+	rawConfig, err := kubevirttypes.GetConfig(*pconfig)
+	if err != nil {
 		return nil, nil, err
 	}
+
 	config := Config{}
 	config.Kubeconfig, err = p.configVarResolver.GetConfigVarStringValueOrEnv(rawConfig.Kubeconfig, "KUBEVIRT_KUBECONFIG")
 	if err != nil {
@@ -183,10 +185,10 @@ func (p *provider) getConfig(s v1alpha1.ProviderSpec) (*Config, *providerconfigt
 		config.DNSConfig = rawConfig.DNSConfig
 	}
 
-	return &config, &pconfig, nil
+	return &config, pconfig, nil
 }
 
-func (p *provider) Get(machine *v1alpha1.Machine, _ *cloudprovidertypes.ProviderData) (instance.Instance, error) {
+func (p *provider) Get(machine *clusterv1alpha1.Machine, _ *cloudprovidertypes.ProviderData) (instance.Instance, error) {
 	c, _, err := p.getConfig(machine.Spec.ProviderSpec)
 	if err != nil {
 		return nil, cloudprovidererrors.TerminalError{
@@ -243,11 +245,11 @@ func (p *provider) Get(machine *v1alpha1.Machine, _ *cloudprovidertypes.Provider
 // We don't use the UID for kubevirt because the name of a VMI must stay stable
 // in order for the node name to stay stable. The operator is responsible for ensuring
 // there are no conflicts, e.G. by using one Namespace per Kubevirt user cluster
-func (p *provider) MigrateUID(machine *v1alpha1.Machine, new types.UID) error {
+func (p *provider) MigrateUID(machine *clusterv1alpha1.Machine, new types.UID) error {
 	return nil
 }
 
-func (p *provider) Validate(spec v1alpha1.MachineSpec) error {
+func (p *provider) Validate(spec clusterv1alpha1.MachineSpec) error {
 	c, pc, err := p.getConfig(spec.ProviderSpec)
 	if err != nil {
 		return fmt.Errorf("failed to parse config: %v", err)
@@ -276,11 +278,11 @@ func (p *provider) Validate(spec v1alpha1.MachineSpec) error {
 	return nil
 }
 
-func (p *provider) AddDefaults(spec v1alpha1.MachineSpec) (v1alpha1.MachineSpec, error) {
+func (p *provider) AddDefaults(spec clusterv1alpha1.MachineSpec) (clusterv1alpha1.MachineSpec, error) {
 	return spec, nil
 }
 
-func (p *provider) GetCloudConfig(spec v1alpha1.MachineSpec) (config string, name string, err error) {
+func (p *provider) GetCloudConfig(spec clusterv1alpha1.MachineSpec) (config string, name string, err error) {
 	c, _, err := p.getConfig(spec.ProviderSpec)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to parse config: %v", err)
@@ -293,7 +295,7 @@ func (p *provider) GetCloudConfig(spec v1alpha1.MachineSpec) (config string, nam
 	return ccs, string(providerconfigtypes.CloudProviderExternal), err
 }
 
-func (p *provider) MachineMetricsLabels(machine *v1alpha1.Machine) (map[string]string, error) {
+func (p *provider) MachineMetricsLabels(machine *clusterv1alpha1.Machine) (map[string]string, error) {
 	labels := make(map[string]string)
 
 	c, _, err := p.getConfig(machine.Spec.ProviderSpec)
@@ -306,7 +308,7 @@ func (p *provider) MachineMetricsLabels(machine *v1alpha1.Machine) (map[string]s
 	return labels, err
 }
 
-func (p *provider) Create(machine *v1alpha1.Machine, _ *cloudprovidertypes.ProviderData, userdata string) (instance.Instance, error) {
+func (p *provider) Create(machine *clusterv1alpha1.Machine, _ *cloudprovidertypes.ProviderData, userdata string) (instance.Instance, error) {
 	c, pc, err := p.getConfig(machine.Spec.ProviderSpec)
 	if err != nil {
 		return nil, cloudprovidererrors.TerminalError{
@@ -408,12 +410,12 @@ func (p *provider) Create(machine *v1alpha1.Machine, _ *cloudprovidertypes.Provi
 					DNSConfig: c.DNSConfig,
 				},
 			},
-			DataVolumeTemplates: []cdi.DataVolume{
+			DataVolumeTemplates: []kubevirtv1.DataVolumeTemplateSpec{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: dataVolumeName,
 					},
-					Spec: cdi.DataVolumeSpec{
+					Spec: cdiv1beta1.DataVolumeSpec{
 						PVC: &corev1.PersistentVolumeClaimSpec{
 							StorageClassName: utilpointer.StringPtr(c.StorageClassName),
 							AccessModes: []corev1.PersistentVolumeAccessMode{
@@ -423,8 +425,8 @@ func (p *provider) Create(machine *v1alpha1.Machine, _ *cloudprovidertypes.Provi
 								Requests: pvcRequest,
 							},
 						},
-						Source: cdi.DataVolumeSource{
-							HTTP: &cdi.DataVolumeSourceHTTP{
+						Source: &cdiv1beta1.DataVolumeSource{
+							HTTP: &cdiv1beta1.DataVolumeSourceHTTP{
 								URL: c.SourceURL,
 							},
 						},
@@ -459,7 +461,7 @@ func (p *provider) Create(machine *v1alpha1.Machine, _ *cloudprovidertypes.Provi
 
 }
 
-func (p *provider) Cleanup(machine *v1alpha1.Machine, _ *cloudprovidertypes.ProviderData) (bool, error) {
+func (p *provider) Cleanup(machine *clusterv1alpha1.Machine, _ *cloudprovidertypes.ProviderData) (bool, error) {
 	c, _, err := p.getConfig(machine.Spec.ProviderSpec)
 	if err != nil {
 		return false, cloudprovidererrors.TerminalError{
@@ -500,7 +502,7 @@ func parseResources(cpus, memory string) (*corev1.ResourceList, error) {
 	}, nil
 }
 
-func (p *provider) SetMetricsForMachines(machines v1alpha1.MachineList) error {
+func (p *provider) SetMetricsForMachines(machines clusterv1alpha1.MachineList) error {
 	return nil
 }
 

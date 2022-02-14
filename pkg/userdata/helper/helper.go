@@ -21,10 +21,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/BurntSushi/toml"
-
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+)
+
+const (
+	DefaultDockerContainerLogMaxFiles = "5"
+	DefaultDockerContainerLogMaxSize  = "100m"
 )
 
 func GetServerAddressFromKubeconfig(kubeconfig *clientcmdapi.Config) (string, error) {
@@ -103,95 +106,6 @@ SystemMaxUse=5G
 `
 }
 
-type containerdConfigManifest struct {
-	Version int                    `toml:"version"`
-	Metrics *containerdMetrics     `toml:"metrics"`
-	Plugins map[string]interface{} `toml:"plugins"`
-}
-
-type containerdMetrics struct {
-	Address string `toml:"address"`
-}
-
-type containerdCRIPlugin struct {
-	Containerd *containerdCRISettings `toml:"containerd"`
-	Registry   *containerdCRIRegistry `toml:"registry"`
-}
-
-type containerdCRISettings struct {
-	Runtimes map[string]containerdCRIRuntime `toml:"runtimes"`
-}
-
-type containerdCRIRuntime struct {
-	RuntimeType string      `toml:"runtime_type"`
-	Options     interface{} `toml:"options"`
-}
-
-type containerdCRIRuncOptions struct {
-	SystemdCgroup bool
-}
-
-type containerdCRIRegistry struct {
-	Mirrors map[string]containerdMirror `toml:"mirrors"`
-}
-
-type containerdMirror struct {
-	Endpoint []string `toml:"endpoint"`
-}
-
-func ContainerdConfig(insecureRegistries, registryMirrors []string) (string, error) {
-	criPlugin := containerdCRIPlugin{
-		Containerd: &containerdCRISettings{
-			Runtimes: map[string]containerdCRIRuntime{
-				"runc": {
-					RuntimeType: "io.containerd.runc.v2",
-					Options: containerdCRIRuncOptions{
-						SystemdCgroup: true,
-					},
-				},
-			},
-		},
-		Registry: &containerdCRIRegistry{
-			Mirrors: map[string]containerdMirror{
-				"docker.io": {
-					Endpoint: []string{"https://registry-1.docker.io"},
-				},
-			},
-		},
-	}
-
-	for _, insecureRegistry := range insecureRegistries {
-		criPlugin.Registry.Mirrors[insecureRegistry] = containerdMirror{
-			Endpoint: []string{fmt.Sprintf("http://%s", insecureRegistry)},
-		}
-	}
-
-	if len(registryMirrors) > 0 {
-		criPlugin.Registry.Mirrors["docker.io"] = containerdMirror{
-			Endpoint: registryMirrors,
-		}
-	}
-
-	cfg := containerdConfigManifest{
-		Version: 2,
-		Metrics: &containerdMetrics{
-			// metrics available at http://127.0.0.1:1338/v1/metrics
-			Address: "127.0.0.1:1338",
-		},
-
-		Plugins: map[string]interface{}{
-			"io.containerd.grpc.v1.cri": criPlugin,
-		},
-	}
-
-	var buf strings.Builder
-	enc := toml.NewEncoder(&buf)
-	enc.Indent = ""
-	err := enc.Encode(cfg)
-
-	return buf.String(), err
-}
-
 type dockerConfig struct {
 	ExecOpts           []string          `json:"exec-opts,omitempty"`
 	StorageDriver      string            `json:"storage-driver,omitempty"`
@@ -203,23 +117,32 @@ type dockerConfig struct {
 }
 
 // DockerConfig returns the docker daemon.json.
-func DockerConfig(insecureRegistries, registryMirrors []string) (string, error) {
+func DockerConfig(insecureRegistries, registryMirrors []string, logMaxFiles string, logMaxSize string) (string, error) {
+	if len(logMaxSize) > 0 {
+		// Parse log max size to ensure that it has the correct units
+		logMaxSize = strings.ToLower(logMaxSize)
+		logMaxSize = strings.ReplaceAll(logMaxSize, "ki", "k")
+		logMaxSize = strings.ReplaceAll(logMaxSize, "mi", "m")
+		logMaxSize = strings.ReplaceAll(logMaxSize, "gi", "g")
+	} else {
+		logMaxSize = DefaultDockerContainerLogMaxSize
+	}
+
+	// Default if value is not provided
+	if len(logMaxFiles) == 0 {
+		logMaxFiles = DefaultDockerContainerLogMaxFiles
+	}
+
 	cfg := dockerConfig{
 		ExecOpts:      []string{"native.cgroupdriver=systemd"},
 		StorageDriver: "overlay2",
 		LogDriver:     "json-file",
 		LogOpts: map[string]string{
-			"max-size": "10m",
-			"max-file": "5",
+			"max-size": logMaxSize,
+			"max-file": logMaxFiles,
 		},
 		InsecureRegistries: insecureRegistries,
 		RegistryMirrors:    registryMirrors,
-	}
-	if insecureRegistries == nil {
-		cfg.InsecureRegistries = []string{}
-	}
-	if registryMirrors == nil {
-		cfg.RegistryMirrors = []string{}
 	}
 
 	b, err := json.Marshal(cfg)
@@ -244,6 +167,9 @@ echodate() {
 # get the default interface IP address
 DEFAULT_IFC_IP=$(ip -o  route get 1 | grep -oP "src \K\S+")
 
+# get the full hostname
+FULL_HOSTNAME=$(hostname -f)
+
 if [ -z "${DEFAULT_IFC_IP}" ]
 then
 	echodate "Failed to get IP address for the default route interface"
@@ -254,13 +180,13 @@ fi
 # we need the line below because flatcar has the same string "coreos" in that file
 if grep -q coreos /etc/os-release
 then
-  echo "KUBELET_NODE_IP=${DEFAULT_IFC_IP}" > /etc/kubernetes/nodeip.conf
+  echo -e "KUBELET_NODE_IP=${DEFAULT_IFC_IP}\nKUBELET_HOSTNAME=${FULL_HOSTNAME}" > /etc/kubernetes/nodeip.conf
 elif [ ! -d /etc/systemd/system/kubelet.service.d ]
 then
 	echodate "Can't find kubelet service extras directory"
 	exit 1
 else
-  echo -e "[Service]\nEnvironment=\"KUBELET_NODE_IP=${DEFAULT_IFC_IP}\"" > /etc/systemd/system/kubelet.service.d/nodeip.conf
+  echo -e "[Service]\nEnvironment=\"KUBELET_NODE_IP=${DEFAULT_IFC_IP}\"\nEnvironment=\"KUBELET_HOSTNAME=${FULL_HOSTNAME}\"" > /etc/systemd/system/kubelet.service.d/nodeip.conf
 fi
 	`
 }

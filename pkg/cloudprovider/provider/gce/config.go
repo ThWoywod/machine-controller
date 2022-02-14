@@ -48,7 +48,7 @@ var imageProjects = map[providerconfigtypes.OperatingSystem]string{
 
 // imageFamilies maps the OS to the Google Cloud image projects
 var imageFamilies = map[providerconfigtypes.OperatingSystem]string{
-	providerconfigtypes.OperatingSystemUbuntu: "ubuntu-1804-lts",
+	providerconfigtypes.OperatingSystemUbuntu: "ubuntu-2004-lts",
 }
 
 // diskTypes are the disk types of the Google Cloud. Map is used for
@@ -66,27 +66,28 @@ const (
 
 // newCloudProviderSpec creates a cloud provider specification out of the
 // given ProviderSpec.
-func newCloudProviderSpec(spec v1alpha1.ProviderSpec) (*gcetypes.CloudProviderSpec, *providerconfigtypes.Config, error) {
+func newCloudProviderSpec(provSpec v1alpha1.ProviderSpec) (*gcetypes.CloudProviderSpec, *providerconfigtypes.Config, error) {
 	// Retrieve provider configuration from machine specification.
-	if spec.Value == nil {
+	if provSpec.Value == nil {
 		return nil, nil, fmt.Errorf("machine.spec.providerconfig.value is nil")
 	}
-	providerConfig := providerconfigtypes.Config{}
-	err := json.Unmarshal(spec.Value.Raw, &providerConfig)
+
+	pconfig, err := providerconfigtypes.GetConfig(provSpec)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot unmarshal machine.spec.providerconfig.value: %v", err)
 	}
 
-	if providerConfig.OperatingSystemSpec.Raw == nil {
+	if pconfig.OperatingSystemSpec.Raw == nil {
 		return nil, nil, errors.New("operatingSystemSpec in the MachineDeployment cannot be empty")
 	}
+
 	// Retrieve cloud provider specification from cloud provider specification.
-	cpSpec := &gcetypes.CloudProviderSpec{}
-	err = json.Unmarshal(providerConfig.CloudProviderSpec.Raw, cpSpec)
+	cpSpec, err := gcetypes.GetConfig(*pconfig)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot unmarshal cloud provider specification: %v", err)
 	}
-	return cpSpec, &providerConfig, nil
+
+	return cpSpec, pconfig, nil
 }
 
 // config contains the configuration of the Provider.
@@ -161,7 +162,7 @@ func newConfig(resolver *providerconfig.ConfigVarResolver, spec v1alpha1.Provide
 		return nil, fmt.Errorf("cannot retrieve subnetwork: %v", err)
 	}
 
-	cfg.preemptible, err = resolver.GetConfigVarBoolValue(cpSpec.Preemptible)
+	cfg.preemptible, _, err = resolver.GetConfigVarBoolValue(cpSpec.Preemptible)
 	if err != nil {
 		return nil, fmt.Errorf("cannot retrieve preemptible: %v", err)
 	}
@@ -170,18 +171,18 @@ func newConfig(resolver *providerconfig.ConfigVarResolver, spec v1alpha1.Provide
 	cfg.assignPublicIPAddress = true
 
 	if cpSpec.AssignPublicIPAddress != nil {
-		cfg.assignPublicIPAddress, err = resolver.GetConfigVarBoolValue(*cpSpec.AssignPublicIPAddress)
+		cfg.assignPublicIPAddress, _, err = resolver.GetConfigVarBoolValue(*cpSpec.AssignPublicIPAddress)
 		if err != nil {
 			return nil, fmt.Errorf("failed to retrieve assignPublicIPAddress: %v", err)
 		}
 	}
 
-	cfg.multizone, err = resolver.GetConfigVarBoolValue(cpSpec.MultiZone)
+	cfg.multizone, _, err = resolver.GetConfigVarBoolValue(cpSpec.MultiZone)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve multizone: %v", err)
 	}
 
-	cfg.regional, err = resolver.GetConfigVarBoolValue(cpSpec.Regional)
+	cfg.regional, _, err = resolver.GetConfigVarBoolValue(cpSpec.Regional)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve regional: %v", err)
 	}

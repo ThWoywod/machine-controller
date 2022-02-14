@@ -26,7 +26,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/Masterminds/semver"
+	"github.com/Masterminds/semver/v3"
 
 	"github.com/kubermatic/machine-controller/pkg/apis/plugin"
 	providerconfigtypes "github.com/kubermatic/machine-controller/pkg/providerconfig/types"
@@ -105,6 +105,7 @@ func (p Provider) UserData(req plugin.UserDataRequest) (string, error) {
 		ContainerRuntimeScript         string
 		ContainerRuntimeConfigFileName string
 		ContainerRuntimeConfig         string
+		ContainerRuntimeName           string
 	}{
 		UserDataRequest:                req,
 		ProviderSpec:                   pconfig,
@@ -118,6 +119,7 @@ func (p Provider) UserData(req plugin.UserDataRequest) (string, error) {
 		ContainerRuntimeScript:         crScript,
 		ContainerRuntimeConfigFileName: crEngine.ConfigFileName(),
 		ContainerRuntimeConfig:         crConfig,
+		ContainerRuntimeName:           crEngine.String(),
 	}
 
 	buf := strings.Builder{}
@@ -140,7 +142,7 @@ package_upgrade: true
 package_reboot_if_required: true
 {{- end }}
 
-ssh_pwauth: no
+ssh_pwauth: false
 
 {{- if ne (len .ProviderSpec.SSHPublicKeys) 0 }}
 ssh_authorized_keys:
@@ -204,6 +206,13 @@ write_files:
     hostnamectl set-hostname {{ .MachineSpec.Name }}
     {{ end }}
 
+{{- /* CentOS 8 has reached EOL and all packages were moved to vault.centos.org -- https://www.centos.org/centos-linux-eol/ */}}
+    source /etc/os-release
+    if [ "$ID" == "centos" ] && [ "$VERSION_ID" == "8" ]; then
+      sudo sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*
+      sudo sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
+    fi
+
     yum install -y \
       device-mapper-persistent-data \
       lvm2 \
@@ -218,8 +227,15 @@ write_files:
       {{- if eq .CloudProviderName "vsphere" }}
       open-vm-tools \
       {{- end }}
+      {{- if eq .CloudProviderName "nutanix" }}
+      iscsi-initiator-utils \
+      {{- end }}
       ipvsadm
 
+    {{- /* iscsid service is required on Nutanix machines for CSI driver to attach volumes. */}}
+    {{- if eq .CloudProviderName "nutanix" }}
+    systemctl enable --now iscsid
+    {{ end }}
 {{ .ContainerRuntimeScript | indent 4 }}
 
 {{ safeDownloadBinariesScript .KubeletVersion | indent 4 }}
@@ -244,7 +260,7 @@ write_files:
 
 - path: "/etc/systemd/system/kubelet.service"
   content: |
-{{ kubeletSystemdUnit .ContainerRuntime.String .KubeletVersion .CloudProviderName .MachineSpec.Name .DNSIPs .ExternalCloudProvider .PauseImage .MachineSpec.Taints .ExtraKubeletFlags | indent 4 }}
+{{ kubeletSystemdUnit .ContainerRuntimeName .KubeletVersion .KubeletCloudProviderName .MachineSpec.Name .DNSIPs .ExternalCloudProvider .PauseImage .MachineSpec.Taints .ExtraKubeletFlags | indent 4 }}
 
 - path: "/etc/kubernetes/cloud-config"
   permissions: "0600"
@@ -263,7 +279,7 @@ write_files:
 
 - path: "/etc/kubernetes/kubelet.conf"
   content: |
-{{ kubeletConfiguration "cluster.local" .DNSIPs .KubeletFeatureGates | indent 4 }}
+{{ kubeletConfiguration "cluster.local" .DNSIPs .KubeletFeatureGates .KubeletConfigs .ContainerRuntimeName | indent 4 }}
 
 - path: "/etc/kubernetes/pki/ca.crt"
   content: |

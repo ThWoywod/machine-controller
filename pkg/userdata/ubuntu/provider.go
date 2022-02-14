@@ -29,7 +29,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/Masterminds/semver"
+	"github.com/Masterminds/semver/v3"
 
 	"github.com/kubermatic/machine-controller/pkg/apis/plugin"
 	providerconfigtypes "github.com/kubermatic/machine-controller/pkg/providerconfig/types"
@@ -94,7 +94,6 @@ func (p Provider) UserData(req plugin.UserDataRequest) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to generate container runtime config: %w", err)
 	}
-
 	data := struct {
 		plugin.UserDataRequest
 		ProviderSpec                   *providerconfigtypes.Config
@@ -108,6 +107,7 @@ func (p Provider) UserData(req plugin.UserDataRequest) (string, error) {
 		ContainerRuntimeScript         string
 		ContainerRuntimeConfigFileName string
 		ContainerRuntimeConfig         string
+		ContainerRuntimeName           string
 	}{
 		UserDataRequest:                req,
 		ProviderSpec:                   pconfig,
@@ -121,6 +121,7 @@ func (p Provider) UserData(req plugin.UserDataRequest) (string, error) {
 		ContainerRuntimeScript:         crScript,
 		ContainerRuntimeConfigFileName: crEngine.ConfigFileName(),
 		ContainerRuntimeConfig:         crConfig,
+		ContainerRuntimeName:           crEngine.String(),
 	}
 
 	var buf strings.Builder
@@ -206,7 +207,7 @@ package_upgrade: true
 package_reboot_if_required: true
 {{- end }}
 
-ssh_pwauth: no
+ssh_pwauth: false
 
 {{- if .ProviderSpec.SSHPublicKeys }}
 ssh_authorized_keys:
@@ -280,7 +281,15 @@ write_files:
       {{- if eq .CloudProviderName "vsphere" }}
       open-vm-tools \
       {{- end }}
+      {{- if eq .CloudProviderName "nutanix" }}
+      open-iscsi \
+      {{- end }}
       ipvsadm
+
+    {{- /* iscsid service is required on Nutanix machines for CSI driver to attach volumes. */}}
+    {{- if eq .CloudProviderName "nutanix" }}
+    systemctl enable --now iscsid
+    {{ end }}
 
     # Update grub to include kernel command options to enable swap accounting.
     # Exclude alibaba cloud until this is fixed https://github.com/kubermatic/machine-controller/issues/682
@@ -312,7 +321,7 @@ write_files:
 
 - path: "/etc/systemd/system/kubelet.service"
   content: |
-{{ kubeletSystemdUnit .ContainerRuntime.String .KubeletVersion .CloudProviderName .MachineSpec.Name .DNSIPs .ExternalCloudProvider .PauseImage .MachineSpec.Taints .ExtraKubeletFlags | indent 4 }}
+{{ kubeletSystemdUnit .ContainerRuntimeName .KubeletVersion .KubeletCloudProviderName .MachineSpec.Name .DNSIPs .ExternalCloudProvider .PauseImage .MachineSpec.Taints .ExtraKubeletFlags | indent 4 }}
 
 - path: "/etc/systemd/system/kubelet.service.d/extras.conf"
   content: |
@@ -366,7 +375,7 @@ write_files:
 
 - path: "/etc/kubernetes/kubelet.conf"
   content: |
-{{ kubeletConfiguration "cluster.local" .DNSIPs .KubeletFeatureGates | indent 4 }}
+{{ kubeletConfiguration "cluster.local" .DNSIPs .KubeletFeatureGates .KubeletConfigs .ContainerRuntimeName | indent 4 }}
 
 - path: /etc/systemd/system/kubelet-healthcheck.service
   permissions: "0644"

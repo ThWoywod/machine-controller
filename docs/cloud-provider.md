@@ -101,8 +101,14 @@ username: ""
 password: ""
 # the openstack domain
 domainName: "default"
-# tenant name
+# project name
+projectName: ""
+# project id
+projectID: ""
+# tenant name (deprecated, should use projectName)
 tenantName: ""
+# tenant Id (deprecated, should use projectID)
+tenantID: ""
 # image to use (currently only ubuntu is supported)
 image: "Ubuntu 18.04 amd64"
 # instance flavor
@@ -121,6 +127,8 @@ availabilityZone: ""
 region: ""
 # the name of the network to use
 network: ""
+# compute microversion
+computeAPIVersion: ""
 # set trust-device-path flag for kubelet
 trustDevicePath: false
 # set root disk size
@@ -239,7 +247,7 @@ subscriptionID: "<< AZURE_SUBSCRIPTION_ID >>"
 location: "westeurope"
 # Azure resource group
 resourceGroup: "<< YOUR_RESOURCE_GROUP >>"
-# Azure resource group of the vnet	
+# Azure resource group of the vnet
 vnetResourceGroup: "<< YOUR_VNET_RESOURCE_GROUP >>"
 # Azure availability set
 availabilitySet: "<< YOUR AVAILABILITY SET >>"
@@ -263,6 +271,26 @@ tags:
   "kubernetesCluster": "my-cluster"
 ```
 
+## Equinix Metal
+
+### machine.spec.providerConfig.cloudProviderSpec
+```yaml
+# If empty, can be set via METAL_AUTH_TOKEN env var
+token: "<< METAL_AUTH_TOKEN >>"
+# instance type
+instanceType: "t1.small.x86"
+# Equinix Metal project ID
+projectID: "<< PROJECT_ID >>"
+# Equinix Metal facilities
+facilities:
+  - "ewr1"
+# Equinix Metal billingCycle
+billingCycle: ""
+# node tags
+tags:
+  "kubernetesCluster": "my-cluster"
+```
+
 ## KubeVirt
 
 ### machine.spec.providerConfig.cloudProviderSpec
@@ -280,26 +308,6 @@ sourceURL: http://10.109.79.210/<< OS_NAME >>.img
 # instance resources
 cpus: "1"
 memory: "2048M"
-```
-
-## Packet
-
-### machine.spec.providerConfig.cloudProviderSpec
-```yaml
-# If empty, can be set via PACKET_API_KEY env var
-apiKey: "<< PACKET_API_KEY >>"
-# instance type
-instanceType: "t1.small.x86"
-# packet project ID
-projectID: "<< PROJECT_ID >>"
-# packet facilities
-facilities:
-  - "ewr1"
-# packet billingCycle
-billingCycle: ""
-# node tags
-tags:
-  "kubernetesCluster": "my-cluster"
 ```
 
 ## vSphere

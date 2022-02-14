@@ -35,6 +35,7 @@ import (
 	cloudprovidererrors "github.com/kubermatic/machine-controller/pkg/cloudprovider/errors"
 	"github.com/kubermatic/machine-controller/pkg/cloudprovider/instance"
 	cloudprovidertypes "github.com/kubermatic/machine-controller/pkg/cloudprovider/types"
+	"github.com/kubermatic/machine-controller/pkg/cloudprovider/util"
 	"github.com/kubermatic/machine-controller/pkg/containerruntime"
 	kuberneteshelper "github.com/kubermatic/machine-controller/pkg/kubernetes"
 	"github.com/kubermatic/machine-controller/pkg/node/eviction"
@@ -91,6 +92,8 @@ const (
 	// AnnotationAutoscalerIdentifier is used by the cluster-autoscaler
 	// cluster-api provider to match Nodes to Machines
 	AnnotationAutoscalerIdentifier = "cluster.k8s.io/machine"
+
+	provisioningSuffix = "osc-provisioning"
 )
 
 // Reconciler is the controller implementation for machine resources
@@ -111,6 +114,10 @@ type Reconciler struct {
 	nodeSettings                     NodeSettings
 	redhatSubscriptionManager        rhsm.RedHatSubscriptionManager
 	satelliteSubscriptionManager     rhsm.SatelliteSubscriptionManager
+
+	useOSM        bool
+	podCIDR       string
+	nodePortRange string
 }
 
 type NodeSettings struct {
@@ -126,10 +133,6 @@ type NodeSettings struct {
 	RegistryMirrors []string
 	// Translates to --pod-infra-container-image on the kubelet. If not set, the kubelet will default it.
 	PauseImage string
-	// The hyperkube image to use. Currently only Container Linux and Flatcar Linux uses it.
-	HyperkubeImage string
-	// The kubelet repository to use. Currently only Flatcar Linux uses it.
-	KubeletRepository string
 	// Translates to feature gates on the kubelet.
 	// Default: RotateKubeletServerCertificate=true
 	KubeletFeatureGates map[string]bool
@@ -137,10 +140,13 @@ type NodeSettings struct {
 	ExternalCloudProvider bool
 	// container runtime to install
 	ContainerRuntime containerruntime.Config
+	// Registry credentials secret object reference
+	RegistryCredentialsSecretRef string
 }
 
 type KubeconfigProvider interface {
 	GetKubeconfig(context.Context) (*clientcmdapi.Config, error)
+	GetBearerToken() string
 }
 
 // MetricsCollection is a struct of all metrics used in
@@ -167,6 +173,9 @@ func Add(
 	bootstrapTokenServiceAccountName *types.NamespacedName,
 	skipEvictionAfter time.Duration,
 	nodeSettings NodeSettings,
+	useOSM bool,
+	podCIDR string,
+	nodePortRange string,
 ) error {
 	reconciler := &Reconciler{
 		kubeClient:                       kubeClient,
@@ -182,6 +191,10 @@ func Add(
 		nodeSettings:                     nodeSettings,
 		redhatSubscriptionManager:        rhsm.NewRedHatSubscriptionManager(),
 		satelliteSubscriptionManager:     rhsm.NewSatelliteSubscriptionManager(),
+
+		useOSM:        useOSM,
+		podCIDR:       podCIDR,
+		nodePortRange: nodePortRange,
 	}
 	m, err := userdatamanager.New()
 	if err != nil {
@@ -201,6 +214,8 @@ func Add(
 	if err := c.Watch(&source.Kind{Type: &clusterv1alpha1.Machine{}}, &handler.EnqueueRequestForObject{}); err != nil {
 		return err
 	}
+
+	metrics.Workers.Set(float64(numWorkers))
 
 	return c.Watch(
 		&source.Kind{Type: &corev1.Node{}},
@@ -688,20 +703,21 @@ func (r *Reconciler) ensureInstanceExistsForMachine(
 				return nil, fmt.Errorf("failed to create bootstrap kubeconfig: %v", err)
 			}
 
-			cloudConfig, cloudProviderName, err := prov.GetCloudConfig(machine.Spec)
+			cloudConfig, kubeletCloudProviderName, err := prov.GetCloudConfig(machine.Spec)
 			if err != nil {
 				return nil, fmt.Errorf("failed to render cloud config: %v", err)
 			}
 
 			// grab kubelet featureGates from the annotations
-			kubeletFeatureGates := common.GetKubeletFeatureGates(machine)
+			kubeletFeatureGates := common.GetKubeletFeatureGates(machine.GetAnnotations())
 			if len(kubeletFeatureGates) == 0 {
 				// fallback to command-line input
 				kubeletFeatureGates = r.nodeSettings.KubeletFeatureGates
 			}
 
 			// grab kubelet general options from the annotations
-			kubeletFlags := common.GetKubeletFlags(machine)
+			kubeletFlags := common.GetKubeletFlags(machine.GetAnnotations())
+			kubeletConfigs := common.GetKubeletConfigs(machine.GetAnnotations())
 
 			// look up for ExternalCloudProvider feature, with fallback to command-line input
 			externalCloudProvider := r.nodeSettings.ExternalCloudProvider
@@ -709,25 +725,76 @@ func (r *Reconciler) ensureInstanceExistsForMachine(
 				externalCloudProvider, _ = strconv.ParseBool(val)
 			}
 
-			req := plugin.UserDataRequest{
-				MachineSpec:           machine.Spec,
-				Kubeconfig:            kubeconfig,
-				CloudConfig:           cloudConfig,
-				CloudProviderName:     cloudProviderName,
-				ExternalCloudProvider: externalCloudProvider,
-				DNSIPs:                r.nodeSettings.ClusterDNSIPs,
-				PauseImage:            r.nodeSettings.PauseImage,
-				HyperkubeImage:        r.nodeSettings.HyperkubeImage,
-				KubeletRepository:     r.nodeSettings.KubeletRepository,
-				KubeletFeatureGates:   kubeletFeatureGates,
-				NoProxy:               r.nodeSettings.NoProxy,
-				HTTPProxy:             r.nodeSettings.HTTPProxy,
-				ContainerRuntime:      r.nodeSettings.ContainerRuntime,
+			registryCredentials, err := containerruntime.GetContainerdAuthConfig(ctx, r.client, r.nodeSettings.RegistryCredentialsSecretRef)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get containerd auth config: %v", err)
 			}
 
-			userdata, err := userdataPlugin.UserData(req)
-			if err != nil {
-				return nil, fmt.Errorf("failed get userdata: %v", err)
+			crRuntime := r.nodeSettings.ContainerRuntime
+			crRuntime.RegistryCredentials = registryCredentials
+
+			if val, ok := kubeletConfigs[common.ContainerLogMaxSizeKubeletConfig]; ok {
+				crRuntime.ContainerLogMaxSize = val
+			}
+
+			if val, ok := kubeletConfigs[common.ContainerLogMaxFilesKubeletConfig]; ok {
+				crRuntime.ContainerLogMaxFiles = val
+			}
+
+			req := plugin.UserDataRequest{
+				MachineSpec:              machine.Spec,
+				Kubeconfig:               kubeconfig,
+				CloudConfig:              cloudConfig,
+				CloudProviderName:        string(providerConfig.CloudProvider),
+				ExternalCloudProvider:    externalCloudProvider,
+				DNSIPs:                   r.nodeSettings.ClusterDNSIPs,
+				PauseImage:               r.nodeSettings.PauseImage,
+				KubeletCloudProviderName: kubeletCloudProviderName,
+				KubeletFeatureGates:      kubeletFeatureGates,
+				KubeletConfigs:           kubeletConfigs,
+				NoProxy:                  r.nodeSettings.NoProxy,
+				HTTPProxy:                r.nodeSettings.HTTPProxy,
+				ContainerRuntime:         crRuntime,
+				PodCIDR:                  r.podCIDR,
+				NodePortRange:            r.nodePortRange,
+			}
+
+			// Here we do stuff!
+			var userdata string
+
+			if r.useOSM {
+				referencedMachineDeployment, err := r.getMachineDeploymentNameForMachine(ctx, machine)
+				if err != nil {
+					return nil, fmt.Errorf("failed to find machine's MachineDployment: %v", err)
+				}
+
+				cloudConfigSecretName := fmt.Sprintf("%s-%s-%s",
+					referencedMachineDeployment,
+					machine.Namespace,
+					provisioningSuffix)
+
+				// It is important to check if the secret holding cloud-config exists
+				if err := r.client.Get(ctx,
+					types.NamespacedName{Name: cloudConfigSecretName, Namespace: util.CloudInitNamespace},
+					&corev1.Secret{}); err != nil {
+					klog.Errorf("Cloud init configurations for machine: %v is not ready yet", machine.Name)
+					return nil, err
+				}
+
+				userdata, err = getOSMBootstrapUserdata(ctx, r.client, req, cloudConfigSecretName)
+				if err != nil {
+					return nil, fmt.Errorf("failed get OSM userdata: %v", err)
+				}
+
+				userdata, err = cleanupTemplateOutput(userdata)
+				if err != nil {
+					return nil, fmt.Errorf("failed to cleanup user-data template: %v", err)
+				}
+			} else {
+				userdata, err = userdataPlugin.UserData(req)
+				if err != nil {
+					return nil, fmt.Errorf("failed get userdata: %v", err)
+				}
 			}
 
 			// Create the instance
@@ -1033,4 +1100,35 @@ func (r *Reconciler) updateNode(ctx context.Context, node *corev1.Node, modifier
 		}
 		return r.client.Update(ctx, node)
 	})
+}
+
+func (r *Reconciler) getMachineDeploymentNameForMachine(ctx context.Context, machine *clusterv1alpha1.Machine) (string, error) {
+	var (
+		machineSetName        string
+		machineDeploymentName string
+	)
+	for _, ownerRef := range machine.OwnerReferences {
+		if ownerRef.Kind == "MachineSet" {
+			machineSetName = ownerRef.Name
+		}
+	}
+
+	if machineSetName != "" {
+		machineSet := &clusterv1alpha1.MachineSet{}
+		if err := r.client.Get(ctx, types.NamespacedName{Name: machineSetName, Namespace: "kube-system"}, machineSet); err != nil {
+			return "", err
+		}
+
+		for _, ownerRef := range machineSet.OwnerReferences {
+			if ownerRef.Kind == "MachineDeployment" {
+				machineDeploymentName = ownerRef.Name
+			}
+		}
+
+		if machineDeploymentName != "" {
+			return machineDeploymentName, nil
+		}
+	}
+
+	return "", fmt.Errorf("failed to find machine deployment reference for the machine %s", machine.Name)
 }

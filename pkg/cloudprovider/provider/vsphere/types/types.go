@@ -17,6 +17,7 @@ limitations under the License.
 package types
 
 import (
+	"github.com/kubermatic/machine-controller/pkg/jsonutil"
 	providerconfigtypes "github.com/kubermatic/machine-controller/pkg/providerconfig/types"
 )
 
@@ -28,7 +29,6 @@ type RawConfig struct {
 	Password       providerconfigtypes.ConfigVarString `json:"password"`
 	VSphereURL     providerconfigtypes.ConfigVarString `json:"vsphereURL"`
 	Datacenter     providerconfigtypes.ConfigVarString `json:"datacenter"`
-	Cluster        providerconfigtypes.ConfigVarString `json:"cluster"`
 	Folder         providerconfigtypes.ConfigVarString `json:"folder"`
 	ResourcePool   providerconfigtypes.ConfigVarString `json:"resourcePool"`
 
@@ -40,4 +40,10 @@ type RawConfig struct {
 	MemoryMB      int64                             `json:"memoryMB"`
 	DiskSizeGB    *int64                            `json:"diskSizeGB,omitempty"`
 	AllowInsecure providerconfigtypes.ConfigVarBool `json:"allowInsecure"`
+}
+
+func GetConfig(pconfig providerconfigtypes.Config) (*RawConfig, error) {
+	rawConfig := &RawConfig{}
+
+	return rawConfig, jsonutil.StrictUnmarshal(pconfig.CloudProviderSpec.Raw, rawConfig)
 }

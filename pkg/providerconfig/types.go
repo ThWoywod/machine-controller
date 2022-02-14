@@ -18,14 +18,22 @@ package providerconfig
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"time"
 
 	providerconfigtypes "github.com/kubermatic/machine-controller/pkg/providerconfig/types"
+	"github.com/kubermatic/machine-controller/pkg/userdata/amzn2"
+	"github.com/kubermatic/machine-controller/pkg/userdata/centos"
+	"github.com/kubermatic/machine-controller/pkg/userdata/flatcar"
+	"github.com/kubermatic/machine-controller/pkg/userdata/rhel"
+	"github.com/kubermatic/machine-controller/pkg/userdata/sles"
+	"github.com/kubermatic/machine-controller/pkg/userdata/ubuntu"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrlruntimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -108,37 +116,60 @@ func (cvr *ConfigVarResolver) GetConfigVarStringValueOrEnv(configVar providercon
 	return envVal, nil
 }
 
-func (cvr *ConfigVarResolver) GetConfigVarBoolValue(configVar providerconfigtypes.ConfigVarBool) (bool, error) {
-	cvs := providerconfigtypes.ConfigVarString{Value: strconv.FormatBool(configVar.Value), SecretKeyRef: configVar.SecretKeyRef}
-	stringVal, err := cvr.GetConfigVarStringValue(cvs)
-	if err != nil {
-		return false, err
+// GetConfigVarBoolValue returns a boolean from a ConfigVarBool. If there is no valid source for the boolean,
+// the second bool returned will be false (to be able to differentiate between "false" and "unset")
+func (cvr *ConfigVarResolver) GetConfigVarBoolValue(configVar providerconfigtypes.ConfigVarBool) (bool, bool, error) {
+	// We need all three of these to fetch and use a secret
+	if configVar.SecretKeyRef.Name != "" && configVar.SecretKeyRef.Namespace != "" && configVar.SecretKeyRef.Key != "" {
+		secret := &corev1.Secret{}
+		name := types.NamespacedName{Namespace: configVar.SecretKeyRef.Namespace, Name: configVar.SecretKeyRef.Name}
+		if err := cvr.client.Get(cvr.ctx, name, secret); err != nil {
+			return false, false, fmt.Errorf("error retrieving secret '%s' from namespace '%s': '%v'", configVar.SecretKeyRef.Name, configVar.SecretKeyRef.Namespace, err)
+		}
+		if val, ok := secret.Data[configVar.SecretKeyRef.Key]; ok {
+			boolVal, err := strconv.ParseBool(string(val))
+			return boolVal, (err == nil), err
+		}
+		return false, false, fmt.Errorf("secret '%s' in namespace '%s' has no key '%s'", configVar.SecretKeyRef.Name, configVar.SecretKeyRef.Namespace, configVar.SecretKeyRef.Key)
 	}
-	boolVal, err := strconv.ParseBool(stringVal)
-	if err != nil {
-		return false, err
+
+	// We need all three of these to fetch and use a configmap
+	if configVar.ConfigMapKeyRef.Name != "" && configVar.ConfigMapKeyRef.Namespace != "" && configVar.ConfigMapKeyRef.Key != "" {
+		configMap := &corev1.ConfigMap{}
+		name := types.NamespacedName{Namespace: configVar.ConfigMapKeyRef.Namespace, Name: configVar.ConfigMapKeyRef.Name}
+		if err := cvr.client.Get(cvr.ctx, name, configMap); err != nil {
+			return false, false, fmt.Errorf("error retrieving configmap '%s' from namespace '%s': '%v'", configVar.ConfigMapKeyRef.Name, configVar.ConfigMapKeyRef.Namespace, err)
+		}
+		if val, ok := configMap.Data[configVar.ConfigMapKeyRef.Key]; ok {
+			boolVal, err := strconv.ParseBool(val)
+			return boolVal, (err == nil), err
+		}
+		return false, false, fmt.Errorf("configmap '%s' in namespace '%s' has no key '%s'", configVar.ConfigMapKeyRef.Name, configVar.ConfigMapKeyRef.Namespace, configVar.ConfigMapKeyRef.Key)
 	}
-	return boolVal, nil
+
+	if configVar.Value == nil {
+		return false, false, nil
+	}
+
+	return configVar.Value != nil && *configVar.Value, true, nil
 }
 
 func (cvr *ConfigVarResolver) GetConfigVarBoolValueOrEnv(configVar providerconfigtypes.ConfigVarBool, envVarName string) (bool, error) {
-	cvs := providerconfigtypes.ConfigVarString{Value: strconv.FormatBool(configVar.Value), SecretKeyRef: configVar.SecretKeyRef}
-	stringVal, err := cvr.GetConfigVarStringValue(cvs)
-	if err != nil {
-		return false, err
+	boolVal, valid, err := cvr.GetConfigVarBoolValue(configVar)
+	if valid && err == nil {
+		return boolVal, nil
 	}
-	if stringVal == "" {
-		envVal, envValFound := os.LookupEnv(envVarName)
-		if !envValFound {
-			return false, fmt.Errorf("all mechanisms(value, secret, configMap) of getting the value failed, including reading from environment variable = %s which was not set", envVarName)
+
+	envVal, envValFound := os.LookupEnv(envVarName)
+	if envValFound {
+		envValBool, err := strconv.ParseBool(envVal)
+		if err != nil {
+			return false, err
 		}
-		stringVal = envVal
+		return envValBool, nil
 	}
-	boolVal, err := strconv.ParseBool(stringVal)
-	if err != nil {
-		return false, err
-	}
-	return boolVal, nil
+
+	return false, nil
 }
 
 func NewConfigVarResolver(ctx context.Context, client ctrlruntimeclient.Client) *ConfigVarResolver {
@@ -146,4 +177,28 @@ func NewConfigVarResolver(ctx context.Context, client ctrlruntimeclient.Client) 
 		ctx:    ctx,
 		client: client,
 	}
+}
+
+func DefaultOperatingSystemSpec(
+	osys providerconfigtypes.OperatingSystem,
+	cloudProvider providerconfigtypes.CloudProvider,
+	operatingSystemSpec runtime.RawExtension,
+) (runtime.RawExtension, error) {
+
+	switch osys {
+	case providerconfigtypes.OperatingSystemAmazonLinux2:
+		return amzn2.DefaultConfig(operatingSystemSpec), nil
+	case providerconfigtypes.OperatingSystemCentOS:
+		return centos.DefaultConfig(operatingSystemSpec), nil
+	case providerconfigtypes.OperatingSystemFlatcar:
+		return flatcar.DefaultConfigForCloud(operatingSystemSpec, cloudProvider), nil
+	case providerconfigtypes.OperatingSystemRHEL:
+		return rhel.DefaultConfig(operatingSystemSpec), nil
+	case providerconfigtypes.OperatingSystemSLES:
+		return sles.DefaultConfig(operatingSystemSpec), nil
+	case providerconfigtypes.OperatingSystemUbuntu:
+		return ubuntu.DefaultConfig(operatingSystemSpec), nil
+	}
+
+	return operatingSystemSpec, errors.New("unknown OperatingSystem")
 }

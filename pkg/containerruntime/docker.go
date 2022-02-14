@@ -21,8 +21,6 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/Masterminds/semver"
-
 	"github.com/kubermatic/machine-controller/pkg/providerconfig/types"
 	"github.com/kubermatic/machine-controller/pkg/userdata/helper"
 )
@@ -33,13 +31,14 @@ const (
 )
 
 type Docker struct {
-	kubeletVersion     *semver.Version
-	insecureRegistries []string
-	registryMirrors    []string
+	insecureRegistries   []string
+	registryMirrors      []string
+	containerLogMaxFiles string
+	containerLogMaxSize  string
 }
 
 func (eng *Docker) Config() (string, error) {
-	return helper.DockerConfig(eng.insecureRegistries, eng.registryMirrors)
+	return helper.DockerConfig(eng.insecureRegistries, eng.registryMirrors, eng.containerLogMaxFiles, eng.containerLogMaxSize)
 }
 
 func (eng *Docker) ConfigFileName() string {
@@ -64,12 +63,6 @@ func (eng *Docker) ScriptFor(os types.OperatingSystem) (string, error) {
 		ContainerdVersion: DefaultContainerdVersion,
 	}
 
-	lessThen117, _ := semver.NewConstraint("< 1.17")
-	if lessThen117.Check(eng.kubeletVersion) {
-		args.DockerVersion = LegacyDockerVersion
-		args.ContainerdVersion = ""
-	}
-
 	switch os {
 	case types.OperatingSystemAmazonLinux2:
 		err := dockerAmazonTemplate.Execute(&buf, args)
@@ -81,7 +74,8 @@ func (eng *Docker) ScriptFor(os types.OperatingSystem) (string, error) {
 		err := dockerAptTemplate.Execute(&buf, args)
 		return buf.String(), err
 	case types.OperatingSystemFlatcar:
-		return "", nil
+		err := dockerFlatcarTemplate.Execute(&buf, args)
+		return buf.String(), err
 	case types.OperatingSystemSLES:
 		return "", nil
 	}
@@ -90,6 +84,11 @@ func (eng *Docker) ScriptFor(os types.OperatingSystem) (string, error) {
 }
 
 var (
+	dockerFlatcarTemplate = template.Must(template.New("docker-flatcar").Parse(`
+systemctl daemon-reload
+systemctl enable --now docker
+`))
+
 	dockerAmazonTemplate = template.Must(template.New("docker-yum-amzn2").Parse(`
 mkdir -p /etc/systemd/system/containerd.service.d /etc/systemd/system/docker.service.d
 
@@ -151,7 +150,7 @@ Restart=always
 EnvironmentFile=-/etc/environment
 EOF
 
-apt-get install -y \
+apt-get install --allow-downgrades -y \
 {{- if .ContainerdVersion }}
     containerd.io={{ .ContainerdVersion }}* \
     docker-ce-cli=5:{{ .DockerVersion }}* \
@@ -163,3 +162,7 @@ systemctl daemon-reload
 systemctl enable --now docker
 `))
 )
+
+func (eng *Docker) String() string {
+	return dockerName
+}
