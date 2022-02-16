@@ -111,12 +111,6 @@ type NetworkConfig struct {
 	DNS     DNSConfig `json:"dns"`
 }
 
-type CloudInitConfig struct {
-	UserData string `json:"userData"`
-
-	// + optinal
-	MergeType string `json:"mergeType,omitempty"`
-}
 
 type Config struct {
 	SSHPublicKeys []string `json:"sshPublicKeys"`
@@ -128,7 +122,7 @@ type Config struct {
 	OperatingSystem     OperatingSystem      `json:"operatingSystem"`
 	OperatingSystemSpec runtime.RawExtension `json:"operatingSystemSpec"`
 
-	CloudInit []CloudInitConfig `json:"cloudInit"`
+	ExtraUserData *string `json:"extraUserData,omitempty"`
 
 	// +optional
 	Network *NetworkConfig `json:"network,omitempty"`
