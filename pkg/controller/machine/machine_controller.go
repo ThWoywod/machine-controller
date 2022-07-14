@@ -37,14 +37,18 @@ import (
 	cloudprovidertypes "github.com/kubermatic/machine-controller/pkg/cloudprovider/types"
 	"github.com/kubermatic/machine-controller/pkg/cloudprovider/util"
 	"github.com/kubermatic/machine-controller/pkg/containerruntime"
+	controllerutil "github.com/kubermatic/machine-controller/pkg/controller/util"
 	kuberneteshelper "github.com/kubermatic/machine-controller/pkg/kubernetes"
 	"github.com/kubermatic/machine-controller/pkg/node/eviction"
+	"github.com/kubermatic/machine-controller/pkg/node/poddeletion"
 	"github.com/kubermatic/machine-controller/pkg/providerconfig"
 	providerconfigtypes "github.com/kubermatic/machine-controller/pkg/providerconfig/types"
 	"github.com/kubermatic/machine-controller/pkg/rhsm"
 	userdatamanager "github.com/kubermatic/machine-controller/pkg/userdata/manager"
 	userdataplugin "github.com/kubermatic/machine-controller/pkg/userdata/plugin"
 	"github.com/kubermatic/machine-controller/pkg/userdata/rhel"
+	"k8c.io/operating-system-manager/pkg/controllers/osc"
+	osmresources "k8c.io/operating-system-manager/pkg/controllers/osc/resources"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -81,7 +85,7 @@ const (
 	// AnnotationMachineUninitialized indicates that a machine is not yet
 	// ready to be worked on by the machine-controller. The machine-controller
 	// will ignore all machines that have this anotation with any value
-	// Its value should consist of one or more initializers, separated by a comma
+	// Its value should consist of one or more initializers, separated by a comma.
 	AnnotationMachineUninitialized = "machine-controller.kubermatic.io/initializers"
 
 	deletionRetryWaitPeriod = 10 * time.Second
@@ -90,13 +94,13 @@ const (
 	NodeOwnerLabelName     = "machine-controller/owned-by"
 
 	// AnnotationAutoscalerIdentifier is used by the cluster-autoscaler
-	// cluster-api provider to match Nodes to Machines
+	// cluster-api provider to match Nodes to Machines.
 	AnnotationAutoscalerIdentifier = "cluster.k8s.io/machine"
 
-	provisioningSuffix = "osc-provisioning"
+	CloudInitNotReadyError = "cloud-init configuration to %s machine: %v is not ready yet"
 )
 
-// Reconciler is the controller implementation for machine resources
+// Reconciler is the controller implementation for machine resources.
 type Reconciler struct {
 	kubeClient kubernetes.Interface
 	client     ctrlruntimeclient.Client
@@ -115,9 +119,9 @@ type Reconciler struct {
 	redhatSubscriptionManager        rhsm.RedHatSubscriptionManager
 	satelliteSubscriptionManager     rhsm.SatelliteSubscriptionManager
 
-	useOSM        bool
-	podCIDR       string
-	nodePortRange string
+	useOSM                            bool
+	nodePortRange                     string
+	overrideBootstrapKubeletAPIServer string
 }
 
 type NodeSettings struct {
@@ -174,8 +178,8 @@ func Add(
 	skipEvictionAfter time.Duration,
 	nodeSettings NodeSettings,
 	useOSM bool,
-	podCIDR string,
 	nodePortRange string,
+	overrideBootstrapKubeletAPIServer string,
 ) error {
 	reconciler := &Reconciler{
 		kubeClient:                       kubeClient,
@@ -192,13 +196,13 @@ func Add(
 		redhatSubscriptionManager:        rhsm.NewRedHatSubscriptionManager(),
 		satelliteSubscriptionManager:     rhsm.NewSatelliteSubscriptionManager(),
 
-		useOSM:        useOSM,
-		podCIDR:       podCIDR,
-		nodePortRange: nodePortRange,
+		useOSM:                            useOSM,
+		nodePortRange:                     nodePortRange,
+		overrideBootstrapKubeletAPIServer: overrideBootstrapKubeletAPIServer,
 	}
 	m, err := userdatamanager.New()
 	if err != nil {
-		return fmt.Errorf("failed to create userdatamanager: %v", err)
+		return fmt.Errorf("failed to create userdatamanager: %w", err)
 	}
 	reconciler.userDataManager = m
 
@@ -222,7 +226,7 @@ func Add(
 		handler.EnqueueRequestsFromMapFunc(func(node client.Object) (result []reconcile.Request) {
 			machinesList := &clusterv1alpha1.MachineList{}
 			if err := mgr.GetClient().List(ctx, machinesList); err != nil {
-				utilruntime.HandleError(fmt.Errorf("Failed to list machines in lister: %v", err))
+				utilruntime.HandleError(fmt.Errorf("failed to list machines in lister: %w", err))
 				return
 			}
 
@@ -282,14 +286,14 @@ func Add(
 }
 
 // clearMachineError is a convenience function to remove a error on the machine if its set.
-// It does not return an error as it's used around the sync handler
+// It does not return an error as it's used around the sync handler.
 func (r *Reconciler) clearMachineError(machine *clusterv1alpha1.Machine) {
 	if machine.Status.ErrorMessage != nil || machine.Status.ErrorReason != nil {
 		if err := r.updateMachine(machine, func(m *clusterv1alpha1.Machine) {
 			m.Status.ErrorMessage = nil
 			m.Status.ErrorReason = nil
 		}); err != nil {
-			utilruntime.HandleError(fmt.Errorf("failed to update machine: %v", err))
+			utilruntime.HandleError(fmt.Errorf("failed to update machine: %w", err))
 		}
 	}
 }
@@ -318,7 +322,7 @@ func (r *Reconciler) updateMachine(m *clusterv1alpha1.Machine, modify ...cloudpr
 }
 
 // updateMachine updates machine's ErrorMessage and ErrorReason regardless if they were set or not
-// this essentially overwrites previous values
+// this essentially overwrites previous values.
 func (r *Reconciler) updateMachineError(machine *clusterv1alpha1.Machine, reason common.MachineStatusError, message string) error {
 	return r.updateMachine(machine, func(m *clusterv1alpha1.Machine) {
 		m.Status.ErrorMessage = &message
@@ -328,28 +332,28 @@ func (r *Reconciler) updateMachineError(machine *clusterv1alpha1.Machine, reason
 
 // updateMachineErrorIfTerminalError is a convenience method that will update machine's Status if the given err is terminal
 // and at the same time terminal error will be returned to the caller
-// otherwise it will return formatted error according to errMsg
+// otherwise it will return formatted error according to errMsg.
 func (r *Reconciler) updateMachineErrorIfTerminalError(machine *clusterv1alpha1.Machine, stReason common.MachineStatusError, stMessage string, err error, errMsg string) error {
 	if ok, _, _ := cloudprovidererrors.IsTerminalError(err); ok {
 		if errNested := r.updateMachineError(machine, stReason, stMessage); errNested != nil {
-			return fmt.Errorf("failed to update machine error after due to %v, terminal error = %v", errNested, stMessage)
+			return fmt.Errorf("failed to update machine error after due to %w, terminal error = %v", errNested, stMessage)
 		}
 		return err
 	}
-	return fmt.Errorf("%s, due to %v", errMsg, err)
+	return fmt.Errorf("%s, due to %w", errMsg, err)
 }
 
-func (r *Reconciler) createProviderInstance(prov cloudprovidertypes.Provider, machine *clusterv1alpha1.Machine, userdata string) (instance.Instance, error) {
-	// Ensure finalizer is there
+func (r *Reconciler) createProviderInstance(ctx context.Context, prov cloudprovidertypes.Provider, machine *clusterv1alpha1.Machine, userdata string) (instance.Instance, error) {
+	// Ensure finalizer is there.
 	_, err := r.ensureDeleteFinalizerExists(machine)
 	if err != nil {
-		return nil, fmt.Errorf("failed to add %q finalizer: %v", FinalizerDeleteInstance, err)
+		return nil, fmt.Errorf("failed to add %q finalizer: %w", FinalizerDeleteInstance, err)
 	}
-	instance, err := prov.Create(machine, r.providerData, userdata)
+	i, err := prov.Create(ctx, machine, r.providerData, userdata)
 	if err != nil {
 		return nil, err
 	}
-	return instance, nil
+	return i, nil
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
@@ -398,23 +402,23 @@ func (r *Reconciler) reconcile(ctx context.Context, machine *clusterv1alpha1.Mac
 
 	providerConfig, err := providerconfigtypes.GetConfig(machine.Spec.ProviderSpec)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get provider config: %v", err)
+		return nil, fmt.Errorf("failed to get provider config: %w", err)
 	}
 	skg := providerconfig.NewConfigVarResolver(ctx, r.client)
 	prov, err := cloudprovider.ForProvider(providerConfig.CloudProvider, skg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get cloud provider %q: %v", providerConfig.CloudProvider, err)
+		return nil, fmt.Errorf("failed to get cloud provider %q: %w", providerConfig.CloudProvider, err)
 	}
 
 	// step 2: check if a user requested to delete the machine
 	if machine.DeletionTimestamp != nil {
-		return r.deleteMachine(ctx, prov, machine)
+		return r.deleteMachine(ctx, prov, providerConfig.CloudProvider, machine)
 	}
 
 	// Step 3: Essentially creates an instance for the given machine.
 	userdataPlugin, err := r.userDataManager.ForOS(providerConfig.OperatingSystem)
 	if err != nil {
-		return nil, fmt.Errorf("failed to userdata provider for '%s': %v", providerConfig.OperatingSystem, err)
+		return nil, fmt.Errorf("failed to userdata provider for '%s': %w", providerConfig.OperatingSystem, err)
 	}
 
 	// case 3.2: creates an instance if there is no node associated with the given machine
@@ -424,21 +428,21 @@ func (r *Reconciler) reconcile(ctx context.Context, machine *clusterv1alpha1.Mac
 
 	node, err := r.getNodeByNodeRef(ctx, machine.Status.NodeRef)
 	if err != nil {
-		//In case we cannot find a node for the NodeRef we must remove the NodeRef & recreate an instance on the next sync
+		// In case we cannot find a node for the NodeRef we must remove the NodeRef & recreate an instance on the next sync
 		if kerrors.IsNotFound(err) {
 			klog.V(3).Infof("found invalid NodeRef on machine %s. Deleting reference...", machine.Name)
 			return nil, r.updateMachine(machine, func(m *clusterv1alpha1.Machine) {
 				m.Status.NodeRef = nil
 			})
 		}
-		return nil, fmt.Errorf("failed to check if node for machine exists: '%s'", err)
+		return nil, fmt.Errorf("failed to check if node for machine exists: '%w'", err)
 	}
 
 	if nodeIsReady(node) {
 		// We must do this to ensure the informers in the machineSet and machineDeployment controller
 		// get triggered as soon as a ready node exists for a machine
 		if err := r.ensureMachineHasNodeReadyCondition(machine); err != nil {
-			return nil, fmt.Errorf("failed to set nodeReady condition on machine: %v", err)
+			return nil, fmt.Errorf("failed to set nodeReady condition on machine: %w", err)
 		}
 	} else {
 		// Node is not ready anymore? Maybe it got deleted
@@ -462,7 +466,31 @@ func (r *Reconciler) ensureMachineHasNodeReadyCondition(machine *clusterv1alpha1
 	})
 }
 
-// evictIfNecessary checks if the machine has a node and evicts it if necessary
+func (r *Reconciler) shouldCleanupVolumes(ctx context.Context, machine *clusterv1alpha1.Machine, providerName providerconfigtypes.CloudProvider) (bool, error) {
+	// we need to wait for volumeAttachments clean up only for vSphere
+	if providerName != providerconfigtypes.CloudProviderVsphere {
+		return false, nil
+	}
+
+	// No node - No volumeAttachments to be collected
+	if machine.Status.NodeRef == nil {
+		klog.V(4).Infof("Skipping eviction for machine %q since it does not have a node", machine.Name)
+		return false, nil
+	}
+
+	node := &corev1.Node{}
+	if err := r.client.Get(ctx, types.NamespacedName{Name: machine.Status.NodeRef.Name}, node); err != nil {
+		// Node does not exist - No volumeAttachments to be collected
+		if kerrors.IsNotFound(err) {
+			klog.V(4).Infof("Skipping eviction for machine %q since it does not have a node", machine.Name)
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to get node %q", machine.Status.NodeRef.Name)
+	}
+	return true, nil
+}
+
+// evictIfNecessary checks if the machine has a node and evicts it if necessary.
 func (r *Reconciler) shouldEvict(ctx context.Context, machine *clusterv1alpha1.Machine) (bool, error) {
 	// If the deletion got triggered a few hours ago, skip eviction.
 	// We assume here that the eviction is blocked by misconfiguration or a misbehaving kubelet and/or controller-runtime
@@ -493,7 +521,7 @@ func (r *Reconciler) shouldEvict(ctx context.Context, machine *clusterv1alpha1.M
 	// * There is at least one Node that is schedulable (`.Spec.Unschedulable == false`)
 	machines := &clusterv1alpha1.MachineList{}
 	if err := r.client.List(ctx, machines); err != nil {
-		return false, fmt.Errorf("failed to get machines from lister: %v", err)
+		return false, fmt.Errorf("failed to get machines from lister: %w", err)
 	}
 	for _, machine := range machines.Items {
 		if machine.Status.NodeRef == nil {
@@ -502,7 +530,7 @@ func (r *Reconciler) shouldEvict(ctx context.Context, machine *clusterv1alpha1.M
 	}
 	nodes := &corev1.NodeList{}
 	if err := r.client.List(ctx, nodes); err != nil {
-		return false, fmt.Errorf("failed to get nodes from lister: %v", err)
+		return false, fmt.Errorf("failed to get nodes from lister: %w", err)
 	}
 	for _, node := range nodes.Items {
 		// Don't consider our own node a valid target
@@ -521,23 +549,36 @@ func (r *Reconciler) shouldEvict(ctx context.Context, machine *clusterv1alpha1.M
 }
 
 // deleteMachine makes sure that an instance has gone in a series of steps.
-func (r *Reconciler) deleteMachine(ctx context.Context, prov cloudprovidertypes.Provider, machine *clusterv1alpha1.Machine) (*reconcile.Result, error) {
+func (r *Reconciler) deleteMachine(ctx context.Context, prov cloudprovidertypes.Provider, providerName providerconfigtypes.CloudProvider, machine *clusterv1alpha1.Machine) (*reconcile.Result, error) {
 	shouldEvict, err := r.shouldEvict(ctx, machine)
 	if err != nil {
 		return nil, err
 	}
+	shouldCleanUpVolumes, err := r.shouldCleanupVolumes(ctx, machine, providerName)
+	if err != nil {
+		return nil, err
+	}
 
+	var evictedSomething, deletedSomething bool
+	var volumesFree = true
 	if shouldEvict {
-		evictedSomething, err := eviction.New(ctx, machine.Status.NodeRef.Name, r.client, r.kubeClient).Run()
+		evictedSomething, err = eviction.New(ctx, machine.Status.NodeRef.Name, r.client, r.kubeClient).Run()
 		if err != nil {
-			return nil, fmt.Errorf("failed to evict node %s: %v", machine.Status.NodeRef.Name, err)
+			return nil, fmt.Errorf("failed to evict node %s: %w", machine.Status.NodeRef.Name, err)
 		}
-		if evictedSomething {
-			return &reconcile.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+	if shouldCleanUpVolumes {
+		deletedSomething, volumesFree, err = poddeletion.New(ctx, machine.Status.NodeRef.Name, r.client, r.kubeClient).Run()
+		if err != nil {
+			return nil, fmt.Errorf("failed to delete pods bound to volumes running on node %s: %w", machine.Status.NodeRef.Name, err)
 		}
 	}
 
-	if result, err := r.deleteCloudProviderInstance(prov, machine); result != nil || err != nil {
+	if evictedSomething || deletedSomething || !volumesFree {
+		return &reconcile.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	if result, err := r.deleteCloudProviderInstance(ctx, prov, machine); result != nil || err != nil {
 		return result, err
 	}
 
@@ -550,17 +591,62 @@ func (r *Reconciler) deleteMachine(ctx context.Context, prov cloudprovidertypes.
 		return nil, nil
 	}
 
-	return nil, r.deleteNodeForMachine(ctx, machine)
+	nodes, err := r.retrieveNodesRelatedToMachine(ctx, machine)
+	if err != nil {
+		return nil, err
+	}
+
+	return nil, r.deleteNodeForMachine(ctx, nodes, machine)
 }
 
-func (r *Reconciler) deleteCloudProviderInstance(prov cloudprovidertypes.Provider, machine *clusterv1alpha1.Machine) (*reconcile.Result, error) {
+func (r *Reconciler) retrieveNodesRelatedToMachine(ctx context.Context, machine *clusterv1alpha1.Machine) ([]*corev1.Node, error) {
+	nodes := make([]*corev1.Node, 0)
+
+	// If there's NodeRef on the Machine object, retrieve the node by using the
+	// value of the NodeRef. If there's no NodeRef, try to find the Node by
+	// listing nodes using the NodeOwner label selector.
+	if machine.Status.NodeRef != nil {
+		objKey := ctrlruntimeclient.ObjectKey{Name: machine.Status.NodeRef.Name}
+		node := &corev1.Node{}
+		if err := r.client.Get(ctx, objKey, node); err != nil {
+			if !kerrors.IsNotFound(err) {
+				return nil, fmt.Errorf("failed to get node %s: %w", machine.Status.NodeRef.Name, err)
+			}
+			klog.V(2).Infof("node %q does not longer exist for machine %q", machine.Status.NodeRef.Name, machine.Spec.Name)
+		} else {
+			nodes = append(nodes, node)
+		}
+	} else {
+		selector, err := labels.Parse(NodeOwnerLabelName + "=" + string(machine.UID))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse label selector: %w", err)
+		}
+		listOpts := &ctrlruntimeclient.ListOptions{LabelSelector: selector}
+		nodeList := &corev1.NodeList{}
+		if err := r.client.List(ctx, nodeList, listOpts); err != nil {
+			return nil, fmt.Errorf("failed to list nodes: %w", err)
+		}
+		if len(nodeList.Items) == 0 {
+			// We just want log that we didn't found the node.
+			klog.V(3).Infof("No node found for the machine %s", machine.Spec.Name)
+		}
+
+		for i := range nodeList.Items {
+			nodes = append(nodes, &nodeList.Items[i])
+		}
+	}
+
+	return nodes, nil
+}
+
+func (r *Reconciler) deleteCloudProviderInstance(ctx context.Context, prov cloudprovidertypes.Provider, machine *clusterv1alpha1.Machine) (*reconcile.Result, error) {
 	finalizers := sets.NewString(machine.Finalizers...)
 	if !finalizers.Has(FinalizerDeleteInstance) {
 		return nil, nil
 	}
 
 	// Delete the instance
-	completelyGone, err := prov.Cleanup(machine, r.providerData)
+	completelyGone, err := prov.Cleanup(ctx, machine, r.providerData)
 	if err != nil {
 		message := fmt.Sprintf("%v. Please manually delete %s finalizer from the machine object.", err, FinalizerDeleteInstance)
 		return nil, r.updateMachineErrorIfTerminalError(machine, common.DeleteMachineError, message, err, "failed to delete machine at cloud provider")
@@ -573,13 +659,13 @@ func (r *Reconciler) deleteCloudProviderInstance(prov cloudprovidertypes.Provide
 
 	machineConfig, err := providerconfigtypes.GetConfig(machine.Spec.ProviderSpec)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get provider config: %v", err)
+		return nil, fmt.Errorf("failed to get provider config: %w", err)
 	}
 
 	if machineConfig.OperatingSystem == providerconfigtypes.OperatingSystemRHEL {
 		rhelConfig, err := rhel.LoadConfig(machineConfig.OperatingSystemSpec)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get rhel os specs: %v", err)
+			return nil, fmt.Errorf("failed to get rhel os specs: %w", err)
 		}
 
 		machineName := machine.Name
@@ -592,8 +678,8 @@ func (r *Reconciler) deleteCloudProviderInstance(prov cloudprovidertypes.Provide
 		}
 
 		if rhelConfig.RHSMOfflineToken != "" {
-			if err := r.redhatSubscriptionManager.UnregisterInstance(rhelConfig.RHSMOfflineToken, machineName); err != nil {
-				return nil, fmt.Errorf("failed to delete subscription for machine name %s: %v", machine.Name, err)
+			if err := r.redhatSubscriptionManager.UnregisterInstance(ctx, rhelConfig.RHSMOfflineToken, machineName); err != nil {
+				return nil, fmt.Errorf("failed to delete subscription for machine name %s: %w", machine.Name, err)
 			}
 		}
 
@@ -605,14 +691,13 @@ func (r *Reconciler) deleteCloudProviderInstance(prov cloudprovidertypes.Provide
 					rhelConfig.RHELSubscriptionManagerPassword,
 					rhelConfig.RHELSatelliteServer)
 				if err != nil {
-					return nil, fmt.Errorf("failed to delete redhat satellite host for machine name %s: %v", machine.Name, err)
+					return nil, fmt.Errorf("failed to delete redhat satellite host for machine name %s: %w", machine.Name, err)
 				}
-
 			}
 		}
 
 		if err := rhsm.RemoveRHELSubscriptionFinalizer(machine, r.updateMachine); err != nil {
-			return nil, fmt.Errorf("failed to remove redhat subscription finalizer: %v", err)
+			return nil, fmt.Errorf("failed to remove redhat subscription finalizer: %w", err)
 		}
 	}
 
@@ -623,50 +708,14 @@ func (r *Reconciler) deleteCloudProviderInstance(prov cloudprovidertypes.Provide
 	})
 }
 
-func (r *Reconciler) deleteNodeForMachine(ctx context.Context, machine *clusterv1alpha1.Machine) error {
-	// If there's NodeRef on the Machine object, remove the Node by using the
-	// value of the NodeRef. If there's no NodeRef, try to find the Node by
-	// listing nodes using the NodeOwner label selector.
-	if machine.Status.NodeRef != nil {
-		objKey := ctrlruntimeclient.ObjectKey{Name: machine.Status.NodeRef.Name}
-		node := &corev1.Node{}
-		nodeFound := true
-		if err := r.client.Get(ctx, objKey, node); err != nil {
+func (r *Reconciler) deleteNodeForMachine(ctx context.Context, nodes []*corev1.Node, machine *clusterv1alpha1.Machine) error {
+	// iterates on all nodes and delete them. Finally, remove the finalizer on the machine
+	for _, node := range nodes {
+		if err := r.client.Delete(ctx, node); err != nil {
 			if !kerrors.IsNotFound(err) {
-				return fmt.Errorf("failed to get node %s: %v", machine.Status.NodeRef.Name, err)
-			}
-			nodeFound = false
-			klog.V(2).Infof("node %q does not longer exist for machine %q", machine.Status.NodeRef.Name, machine.Spec.Name)
-		}
-
-		if nodeFound {
-			if err := r.client.Delete(ctx, node); err != nil {
-				if !kerrors.IsNotFound(err) {
-					return err
-				}
-				klog.V(2).Infof("node %q does not longer exist for machine %q", machine.Status.NodeRef.Name, machine.Spec.Name)
-			}
-		}
-	} else {
-		selector, err := labels.Parse(NodeOwnerLabelName + "=" + string(machine.UID))
-		if err != nil {
-			return fmt.Errorf("failed to parse label selector: %v", err)
-		}
-		listOpts := &ctrlruntimeclient.ListOptions{LabelSelector: selector}
-		nodes := &corev1.NodeList{}
-		if err := r.client.List(ctx, nodes, listOpts); err != nil {
-			return fmt.Errorf("failed to list nodes: %v", err)
-		}
-		if len(nodes.Items) == 0 {
-			// We just want log that we didn't found the node. We don't want to
-			// return here, as we want to remove finalizers at the end.
-			klog.V(3).Infof("No node found for the machine %s", machine.Spec.Name)
-		}
-
-		for _, node := range nodes.Items {
-			if err := r.client.Delete(ctx, &node); err != nil {
 				return err
 			}
+			klog.V(2).Infof("node %q does not longer exist for machine %q", machine.Status.NodeRef.Name, machine.Spec.Name)
 		}
 	}
 
@@ -689,23 +738,27 @@ func (r *Reconciler) ensureInstanceExistsForMachine(
 ) (*reconcile.Result, error) {
 	klog.V(6).Infof("Requesting instance for machine '%s' from cloudprovider because no associated node with status ready found...", machine.Name)
 
-	providerInstance, err := prov.Get(machine, r.providerData)
+	providerInstance, err := prov.Get(ctx, machine, r.providerData)
 
 	// case 2: retrieving instance from provider was not successful
 	if err != nil {
-
 		// case 2.1: instance was not found and we are going to create one
-		if err == cloudprovidererrors.ErrInstanceNotFound {
+		if errors.Is(err, cloudprovidererrors.ErrInstanceNotFound) {
 			klog.V(3).Infof("Validated machine spec of %s", machine.Name)
 
-			kubeconfig, err := r.createBootstrapKubeconfig(ctx, machine.Name)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create bootstrap kubeconfig: %v", err)
+			var kubeconfig *clientcmdapi.Config
+
+			// OSM will take care of the bootstrap kubeconfig and token by itself.
+			if !r.useOSM {
+				kubeconfig, err = r.createBootstrapKubeconfig(ctx, machine.Name)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create bootstrap kubeconfig: %w", err)
+				}
 			}
 
 			cloudConfig, kubeletCloudProviderName, err := prov.GetCloudConfig(machine.Spec)
 			if err != nil {
-				return nil, fmt.Errorf("failed to render cloud config: %v", err)
+				return nil, fmt.Errorf("failed to render cloud config: %w", err)
 			}
 
 			// grab kubelet featureGates from the annotations
@@ -727,7 +780,7 @@ func (r *Reconciler) ensureInstanceExistsForMachine(
 
 			registryCredentials, err := containerruntime.GetContainerdAuthConfig(ctx, r.client, r.nodeSettings.RegistryCredentialsSecretRef)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get containerd auth config: %v", err)
+				return nil, fmt.Errorf("failed to get containerd auth config: %w", err)
 			}
 
 			crRuntime := r.nodeSettings.ContainerRuntime
@@ -755,7 +808,6 @@ func (r *Reconciler) ensureInstanceExistsForMachine(
 				NoProxy:                  r.nodeSettings.NoProxy,
 				HTTPProxy:                r.nodeSettings.HTTPProxy,
 				ContainerRuntime:         crRuntime,
-				PodCIDR:                  r.podCIDR,
 				NodePortRange:            r.nodePortRange,
 			}
 
@@ -763,48 +815,66 @@ func (r *Reconciler) ensureInstanceExistsForMachine(
 			var userdata string
 
 			if r.useOSM {
-				referencedMachineDeployment, err := r.getMachineDeploymentNameForMachine(ctx, machine)
+				referencedMachineDeployment, machineDeploymentRevision, err := controllerutil.GetMachineDeploymentNameAndRevisionForMachine(ctx, machine, r.client)
 				if err != nil {
-					return nil, fmt.Errorf("failed to find machine's MachineDployment: %v", err)
+					return nil, fmt.Errorf("failed to find machine's MachineDployment: %w", err)
 				}
 
-				cloudConfigSecretName := fmt.Sprintf("%s-%s-%s",
+				// We need to ensure that both provisoning and bootstrapping secrets have been created. And that the revision
+				// matches with the machine deployment revision
+				provisioningSecretName := fmt.Sprintf(osmresources.CloudConfigSecretNamePattern,
 					referencedMachineDeployment,
 					machine.Namespace,
-					provisioningSuffix)
+					osmresources.ProvisioningCloudConfig)
 
-				// It is important to check if the secret holding cloud-config exists
+				// Ensure that the provisioning secret exists
+				provisioningSecret := &corev1.Secret{}
 				if err := r.client.Get(ctx,
-					types.NamespacedName{Name: cloudConfigSecretName, Namespace: util.CloudInitNamespace},
-					&corev1.Secret{}); err != nil {
-					klog.Errorf("Cloud init configurations for machine: %v is not ready yet", machine.Name)
+					types.NamespacedName{Name: provisioningSecretName, Namespace: util.CloudInitNamespace},
+					provisioningSecret); err != nil {
+					klog.Errorf(CloudInitNotReadyError, osmresources.ProvisioningCloudConfig, machine.Name)
 					return nil, err
 				}
 
-				userdata, err = getOSMBootstrapUserdata(ctx, r.client, req, cloudConfigSecretName)
-				if err != nil {
-					return nil, fmt.Errorf("failed get OSM userdata: %v", err)
+				provisioningSecretRevision := provisioningSecret.Annotations[osc.MachineDeploymentRevision]
+				if provisioningSecretRevision != machineDeploymentRevision {
+					return nil, fmt.Errorf(CloudInitNotReadyError, osmresources.ProvisioningCloudConfig, machine.Name)
 				}
 
-				userdata, err = cleanupTemplateOutput(userdata)
-				if err != nil {
-					return nil, fmt.Errorf("failed to cleanup user-data template: %v", err)
+				bootstrapSecretName := fmt.Sprintf(osmresources.CloudConfigSecretNamePattern,
+					referencedMachineDeployment,
+					machine.Namespace,
+					osmresources.BootstrapCloudConfig)
+
+				bootstrapSecret := &corev1.Secret{}
+				if err := r.client.Get(ctx,
+					types.NamespacedName{Name: bootstrapSecretName, Namespace: util.CloudInitNamespace},
+					bootstrapSecret); err != nil {
+					klog.Errorf(CloudInitNotReadyError, osmresources.BootstrapCloudConfig, machine.Name)
+					return nil, err
 				}
+
+				bootstrapSecretRevision := bootstrapSecret.Annotations[osc.MachineDeploymentRevision]
+				if bootstrapSecretRevision != machineDeploymentRevision {
+					return nil, fmt.Errorf(CloudInitNotReadyError, osmresources.BootstrapCloudConfig, machine.Name)
+				}
+
+				userdata = getOSMBootstrapUserdata(req.MachineSpec.Name, *bootstrapSecret)
 			} else {
 				userdata, err = userdataPlugin.UserData(req)
 				if err != nil {
-					return nil, fmt.Errorf("failed get userdata: %v", err)
+					return nil, fmt.Errorf("failed get userdata: %w", err)
 				}
 			}
 
 			// Create the instance
-			if _, err = r.createProviderInstance(prov, machine, userdata); err != nil {
+			if _, err = r.createProviderInstance(ctx, prov, machine, userdata); err != nil {
 				message := fmt.Sprintf("%v. Unable to create a machine.", err)
 				return nil, r.updateMachineErrorIfTerminalError(machine, common.CreateMachineError, message, err, "failed to create machine at cloudprovider")
 			}
 			if providerConfig.OperatingSystem == providerconfigtypes.OperatingSystemRHEL {
 				if err := rhsm.AddRHELSubscriptionFinalizer(machine, r.updateMachine); err != nil {
-					return nil, fmt.Errorf("failed to add redhat subscription finalizer: %v", err)
+					return nil, fmt.Errorf("failed to add redhat subscription finalizer: %w", err)
 				}
 			}
 			r.recorder.Event(machine, corev1.EventTypeNormal, "Created", "Successfully created instance")
@@ -820,7 +890,7 @@ func (r *Reconciler) ensureInstanceExistsForMachine(
 		}
 
 		// case 2.3: transient error was returned, requeue the request and try again in the future
-		return nil, fmt.Errorf("failed to get instance from provider: %v", err)
+		return nil, fmt.Errorf("failed to get instance from provider: %w", err)
 	}
 	// Instance exists, so ensure finalizer does as well
 	machine, err = r.ensureDeleteFinalizerExists(machine)
@@ -840,7 +910,7 @@ func (r *Reconciler) ensureInstanceExistsForMachine(
 	if err := r.updateMachine(machine, func(m *clusterv1alpha1.Machine) {
 		m.Status.Addresses = machineAddresses
 	}); err != nil {
-		return nil, fmt.Errorf("failed to update machine after setting .status.addresses: %v", err)
+		return nil, fmt.Errorf("failed to update machine after setting .status.addresses: %w", err)
 	}
 	return r.ensureNodeOwnerRefAndConfigSource(ctx, providerInstance, machine, providerConfig)
 }
@@ -848,7 +918,7 @@ func (r *Reconciler) ensureInstanceExistsForMachine(
 func (r *Reconciler) ensureNodeOwnerRefAndConfigSource(ctx context.Context, providerInstance instance.Instance, machine *clusterv1alpha1.Machine, providerConfig *providerconfigtypes.Config) (*reconcile.Result, error) {
 	node, exists, err := r.getNode(ctx, providerInstance, providerConfig.CloudProvider)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get node for machine %s: %v", machine.Name, err)
+		return nil, fmt.Errorf("failed to get node for machine %s: %w", machine.Name, err)
 	}
 
 	if exists {
@@ -856,20 +926,20 @@ func (r *Reconciler) ensureNodeOwnerRefAndConfigSource(ctx context.Context, prov
 			if err := r.updateNode(ctx, node, func(n *corev1.Node) {
 				n.Labels[NodeOwnerLabelName] = string(machine.UID)
 			}); err != nil {
-				return nil, fmt.Errorf("failed to update node %q after adding owner label: %v", node.Name, err)
+				return nil, fmt.Errorf("failed to update node %q after adding owner label: %w", node.Name, err)
 			}
 		}
 
 		if node.Spec.ConfigSource == nil && machine.Spec.ConfigSource != nil {
-			if err := r.updateNode(ctx, node, func(n *corev1.Node) {
-				n.Spec.ConfigSource = machine.Spec.ConfigSource
+			if err := r.updateNode(ctx, node, func(node *corev1.Node) {
+				node.Spec.ConfigSource = machine.Spec.ConfigSource
 			}); err != nil {
-				return nil, fmt.Errorf("failed to update node %s after setting the config source: %v", node.Name, err)
+				return nil, fmt.Errorf("failed to update node %s after setting the config source: %w", node.Name, err)
 			}
 			klog.V(3).Infof("Added config source to node %s (machine %s)", node.Name, machine.Name)
 		}
 		if err := r.updateMachineStatus(machine, node); err != nil {
-			return nil, fmt.Errorf("failed to update machine status: %v", err)
+			return nil, fmt.Errorf("failed to update machine status: %w", err)
 		}
 	} else {
 		// If the machine has an owner Ref and joinClusterTimeout is configured and reached, delete it to have it re-created by the MachineSet controller
@@ -878,7 +948,7 @@ func (r *Reconciler) ensureNodeOwnerRefAndConfigSource(ctx context.Context, prov
 			if time.Since(machine.CreationTimestamp.Time) > *r.joinClusterTimeout {
 				klog.V(3).Infof("Join cluster timeout expired for machine %s, deleting it", machine.Name)
 				if err := r.client.Delete(ctx, machine); err != nil {
-					return nil, fmt.Errorf("failed to delete machine %s/%s that didn't join cluster within expected period of %s: %v",
+					return nil, fmt.Errorf("failed to delete machine %s/%s that didn't join cluster within expected period of %s: %w",
 						machine.Namespace, machine.Name, r.joinClusterTimeout.String(), err)
 				}
 				return nil, nil
@@ -954,7 +1024,7 @@ func (r *Reconciler) ensureNodeLabelsAnnotationsAndTaints(ctx context.Context, n
 
 	if len(modifiers) > 0 {
 		if err := r.updateNode(ctx, node, modifiers...); err != nil {
-			return fmt.Errorf("failed to update node %s after setting labels/annotations/taints: %v", node.Name, err)
+			return fmt.Errorf("failed to update node %s after setting labels/annotations/taints: %w", node.Name, err)
 		}
 		r.recorder.Event(machine, corev1.EventTypeNormal, "LabelsAnnotationsTaintsUpdated", "Successfully updated labels/annotations/taints")
 		klog.V(3).Infof("Added labels/annotations/taints to node %s (machine %s)", node.Name, machine.Name)
@@ -970,7 +1040,7 @@ func (r *Reconciler) updateMachineStatus(machine *clusterv1alpha1.Machine, node 
 
 	ref, err := reference.GetReference(scheme.Scheme, node)
 	if err != nil {
-		return fmt.Errorf("failed to get node reference for %s : %v", node.Name, err)
+		return fmt.Errorf("failed to get node reference for %s : %w", node.Name, err)
 	}
 	if !equality.Semantic.DeepEqual(machine.Status.NodeRef, ref) ||
 		machine.Status.Versions == nil ||
@@ -979,7 +1049,7 @@ func (r *Reconciler) updateMachineStatus(machine *clusterv1alpha1.Machine, node 
 			m.Status.NodeRef = ref
 			m.Status.Versions = &clusterv1alpha1.MachineVersionInfo{Kubelet: node.Status.NodeInfo.KubeletVersion}
 		}); err != nil {
-			return fmt.Errorf("failed to update machine after setting its status: %v", err)
+			return fmt.Errorf("failed to update machine after setting its status: %w", err)
 		}
 	}
 
@@ -1047,7 +1117,7 @@ func (r *Reconciler) ReadinessChecks(ctx context.Context) map[string]healthcheck
 		"valid-info-kubeconfig": func() error {
 			cm, err := r.kubeconfigProvider.GetKubeconfig(ctx)
 			if err != nil {
-				err := fmt.Errorf("failed to get cluster-info configmap: %v", err)
+				err := fmt.Errorf("failed to get cluster-info configmap: %w", err)
 				klog.V(2).Info(err)
 				return err
 			}
@@ -1081,7 +1151,7 @@ func (r *Reconciler) ensureDeleteFinalizerExists(machine *clusterv1alpha1.Machin
 			finalizers.Insert(FinalizerDeleteNode)
 			m.Finalizers = finalizers.List()
 		}); err != nil {
-			return nil, fmt.Errorf("failed to update machine after adding the delete instance finalizer: %v", err)
+			return nil, fmt.Errorf("failed to update machine after adding the delete instance finalizer: %w", err)
 		}
 		klog.V(3).Infof("Added delete finalizer to machine %s", machine.Name)
 	}
@@ -1100,35 +1170,4 @@ func (r *Reconciler) updateNode(ctx context.Context, node *corev1.Node, modifier
 		}
 		return r.client.Update(ctx, node)
 	})
-}
-
-func (r *Reconciler) getMachineDeploymentNameForMachine(ctx context.Context, machine *clusterv1alpha1.Machine) (string, error) {
-	var (
-		machineSetName        string
-		machineDeploymentName string
-	)
-	for _, ownerRef := range machine.OwnerReferences {
-		if ownerRef.Kind == "MachineSet" {
-			machineSetName = ownerRef.Name
-		}
-	}
-
-	if machineSetName != "" {
-		machineSet := &clusterv1alpha1.MachineSet{}
-		if err := r.client.Get(ctx, types.NamespacedName{Name: machineSetName, Namespace: "kube-system"}, machineSet); err != nil {
-			return "", err
-		}
-
-		for _, ownerRef := range machineSet.OwnerReferences {
-			if ownerRef.Kind == "MachineDeployment" {
-				machineDeploymentName = ownerRef.Name
-			}
-		}
-
-		if machineDeploymentName != "" {
-			return machineDeploymentName, nil
-		}
-	}
-
-	return "", fmt.Errorf("failed to find machine deployment reference for the machine %s", machine.Name)
 }

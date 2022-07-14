@@ -25,6 +25,7 @@ import (
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/session"
+	"github.com/vmware/govmomi/vapi/rest"
 	"github.com/vmware/govmomi/vim25"
 	"github.com/vmware/govmomi/vim25/soap"
 
@@ -39,19 +40,16 @@ type Session struct {
 	Datacenter *object.Datacenter
 }
 
+type RESTSession struct {
+	Client *rest.Client
+}
+
 // NewSession creates a vCenter client with initialized finder.
 func NewSession(ctx context.Context, config *Config) (*Session, error) {
-	clientURL, err := url.Parse(fmt.Sprintf("%s/sdk", config.VSphereURL))
+	vim25Client, err := createVim25Client(ctx, config)
 	if err != nil {
 		return nil, err
 	}
-
-	// creating the govmoni Client in roundabout way because we need to set the proper CA bundle: reference https://github.com/vmware/govmomi/issues/1200
-	soapClient := soap.NewClient(clientURL, config.AllowInsecure)
-	// set our CA bundle
-	soapClient.DefaultTransport().TLSClientConfig.RootCAs = util.CABundle
-
-	vim25Client, err := vim25.NewClient(ctx, soapClient)
 	if err != nil {
 		return nil, err
 	}
@@ -62,13 +60,13 @@ func NewSession(ctx context.Context, config *Config) (*Session, error) {
 	}
 
 	if err = client.Login(ctx, url.UserPassword(config.Username, config.Password)); err != nil {
-		return nil, fmt.Errorf("failed vsphere login: %v", err)
+		return nil, fmt.Errorf("failed vsphere login: %w", err)
 	}
 
 	finder := find.NewFinder(client.Client, true)
 	dc, err := finder.Datacenter(ctx, config.Datacenter)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get vsphere datacenter: %v", err)
+		return nil, fmt.Errorf("failed to get vsphere datacenter: %w", err)
 	}
 	finder.SetDatacenter(dc)
 
@@ -79,9 +77,47 @@ func NewSession(ctx context.Context, config *Config) (*Session, error) {
 	}, nil
 }
 
-// Logout closes the idling vCenter connections
-func (s *Session) Logout() {
-	if err := s.Client.Logout(context.Background()); err != nil {
-		utilruntime.HandleError(fmt.Errorf("vsphere client failed to logout: %s", err))
+// Logout closes the idling vCenter connections.
+func (s *Session) Logout(ctx context.Context) {
+	if err := s.Client.Logout(ctx); err != nil {
+		utilruntime.HandleError(fmt.Errorf("vsphere client failed to logout: %w", err))
 	}
+}
+
+func NewRESTSession(ctx context.Context, config *Config) (*RESTSession, error) {
+	vim25Client, err := createVim25Client(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+
+	client := rest.NewClient(vim25Client)
+
+	if err = client.Login(ctx, url.UserPassword(config.Username, config.Password)); err != nil {
+		return nil, fmt.Errorf("failed to login: %w", err)
+	}
+
+	return &RESTSession{
+		Client: client,
+	}, nil
+}
+
+// Logout closes the idling vCenter connections.
+func (s *RESTSession) Logout(ctx context.Context) {
+	if err := s.Client.Logout(ctx); err != nil {
+		utilruntime.HandleError(fmt.Errorf("vsphere REST client failed to logout: %w", err))
+	}
+}
+
+func createVim25Client(ctx context.Context, config *Config) (*vim25.Client, error) {
+	clientURL, err := url.Parse(fmt.Sprintf("%s/sdk", config.VSphereURL))
+	if err != nil {
+		return nil, err
+	}
+
+	// creating the govmoni Client in roundabout way because we need to set the proper CA bundle: reference https://github.com/vmware/govmomi/issues/1200
+	soapClient := soap.NewClient(clientURL, config.AllowInsecure)
+	// set our CA bundle
+	soapClient.DefaultTransport().TLSClientConfig.RootCAs = util.CABundle
+
+	return vim25.NewClient(ctx, soapClient)
 }

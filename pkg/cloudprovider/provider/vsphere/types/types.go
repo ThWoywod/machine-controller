@@ -29,8 +29,12 @@ type RawConfig struct {
 	Password       providerconfigtypes.ConfigVarString `json:"password"`
 	VSphereURL     providerconfigtypes.ConfigVarString `json:"vsphereURL"`
 	Datacenter     providerconfigtypes.ConfigVarString `json:"datacenter"`
-	Folder         providerconfigtypes.ConfigVarString `json:"folder"`
-	ResourcePool   providerconfigtypes.ConfigVarString `json:"resourcePool"`
+
+	// Cluster is a noop field, it's not used anywhere but left here intentionally for backward compatibility purposes
+	Cluster providerconfigtypes.ConfigVarString `json:"cluster"`
+
+	Folder       providerconfigtypes.ConfigVarString `json:"folder"`
+	ResourcePool providerconfigtypes.ConfigVarString `json:"resourcePool"`
 
 	// Either Datastore or DatastoreCluster have to be provided.
 	DatastoreCluster providerconfigtypes.ConfigVarString `json:"datastoreCluster"`
@@ -39,7 +43,15 @@ type RawConfig struct {
 	CPUs          int32                             `json:"cpus"`
 	MemoryMB      int64                             `json:"memoryMB"`
 	DiskSizeGB    *int64                            `json:"diskSizeGB,omitempty"`
+	Tags          []Tag                             `json:"tags,omitempty"`
 	AllowInsecure providerconfigtypes.ConfigVarBool `json:"allowInsecure"`
+}
+
+// Tag represents vsphere tag.
+type Tag struct {
+	Description string `json:"description,omitempty"`
+	Name        string `json:"name"`
+	CategoryID  string `json:"categoryID"`
 }
 
 func GetConfig(pconfig providerconfigtypes.Config) (*RawConfig, error) {

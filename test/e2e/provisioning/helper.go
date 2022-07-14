@@ -33,10 +33,9 @@ var (
 	scenarios = buildScenarios()
 
 	versions = []*semver.Version{
-		semver.MustParse("v1.20.14"),
-		semver.MustParse("v1.21.8"),
-		semver.MustParse("v1.22.5"),
-		semver.MustParse("v1.23.0"),
+		semver.MustParse("v1.22.7"),
+		semver.MustParse("v1.23.5"),
+		semver.MustParse("v1.24.0"),
 	}
 
 	operatingSystems = []providerconfigtypes.OperatingSystem{
@@ -46,13 +45,15 @@ var (
 		providerconfigtypes.OperatingSystemSLES,
 		providerconfigtypes.OperatingSystemRHEL,
 		providerconfigtypes.OperatingSystemFlatcar,
+		providerconfigtypes.OperatingSystemRockyLinux,
 	}
 
 	openStackImages = map[string]string{
-		string(providerconfigtypes.OperatingSystemUbuntu):  "machine-controller-e2e-ubuntu-20-04",
-		string(providerconfigtypes.OperatingSystemCentOS):  "machine-controller-e2e-centos",
-		string(providerconfigtypes.OperatingSystemRHEL):    "machine-controller-e2e-rhel-8-5",
-		string(providerconfigtypes.OperatingSystemFlatcar): "machine-controller-e2e-flatcar-stable-2983",
+		string(providerconfigtypes.OperatingSystemUbuntu):     "machine-controller-e2e-ubuntu-20-04",
+		string(providerconfigtypes.OperatingSystemCentOS):     "machine-controller-e2e-centos",
+		string(providerconfigtypes.OperatingSystemRHEL):       "machine-controller-e2e-rhel-8-5",
+		string(providerconfigtypes.OperatingSystemFlatcar):    "machine-controller-e2e-flatcar-stable-2983",
+		string(providerconfigtypes.OperatingSystemRockyLinux): "machine-controller-e2e-rockylinux",
 	}
 )
 
@@ -125,7 +126,7 @@ func (a *and) Match(tc scenario) bool {
 	return a.s1.Match(tc) && a.s2.Match(tc)
 }
 
-// NameSelector is used to match against a test case name
+// NameSelector is used to match against a test case name.
 func NameSelector(tcName string) Selector {
 	return &name{tcName}
 }
@@ -157,7 +158,6 @@ func runScenarios(st *testing.T, selector Selector, testParams []string, manifes
 type scenarioExecutor func(string, string, []string, time.Duration) error
 
 func testScenario(t *testing.T, testCase scenario, cloudProvider string, testParams []string, manifestPath string, parallelize bool) {
-
 	if parallelize {
 		t.Parallel()
 	}
@@ -199,10 +199,24 @@ func testScenario(t *testing.T, testCase scenario, cloudProvider string, testPar
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< AMI >>=%s", ""))
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< DISK_SIZE >>=%v", 25))
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< CUSTOM-IMAGE >>=%v", ""))
-		scenarioParams = append(scenarioParams, fmt.Sprintf("<< RHEL_SUBSCRIPTION_MANAGER_USER >>=%s", ""))
-		scenarioParams = append(scenarioParams, fmt.Sprintf("<< RHEL_SUBSCRIPTION_MANAGER_PASSWORD >>=%s", ""))
-		scenarioParams = append(scenarioParams, fmt.Sprintf("<< REDHAT_SUBSCRIPTIONS_OFFLINE_TOKEN >>=%s", ""))
 		scenarioParams = append(scenarioParams, fmt.Sprintf("<< MAX_PRICE >>=%s", "0.03"))
+	}
+
+	if strings.Contains(cloudProvider, string(providerconfigtypes.CloudProviderEquinixMetal)) {
+		switch testCase.osName {
+		case string(providerconfigtypes.OperatingSystemCentOS):
+			scenarioParams = append(scenarioParams, fmt.Sprintf("<< INSTANCE_TYPE >>=%s", "c3.small.x86"))
+			scenarioParams = append(scenarioParams, fmt.Sprintf("<< METRO_CODE >>=%s", "AM"))
+		case string(providerconfigtypes.OperatingSystemFlatcar):
+			scenarioParams = append(scenarioParams, fmt.Sprintf("<< INSTANCE_TYPE >>=%s", "c3.small.x86"))
+			scenarioParams = append(scenarioParams, fmt.Sprintf("<< METRO_CODE >>=%s", "NY"))
+		case string(providerconfigtypes.OperatingSystemRockyLinux):
+			scenarioParams = append(scenarioParams, fmt.Sprintf("<< INSTANCE_TYPE >>=%s", "m3.small.x86"))
+			scenarioParams = append(scenarioParams, fmt.Sprintf("<< METRO_CODE >>=%s", "AM"))
+		case string(providerconfigtypes.OperatingSystemUbuntu):
+			scenarioParams = append(scenarioParams, fmt.Sprintf("<< INSTANCE_TYPE >>=%s", "m3.small.x86"))
+			scenarioParams = append(scenarioParams, fmt.Sprintf("<< METRO_CODE >>=%s", "TY"))
+		}
 	}
 
 	// only used by assume role scenario, otherwise empty (disabled)
@@ -258,6 +272,5 @@ func buildScenarios() []scenario {
 		osName:           "ubuntu",
 		executor:         verifyMigrateUID,
 	})
-
 	return all
 }

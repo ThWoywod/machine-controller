@@ -26,6 +26,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	"gomodules.xyz/jsonpatch/v2"
 
 	machinecontroller "github.com/kubermatic/machine-controller/pkg/controller/machine"
@@ -47,29 +48,34 @@ type admissionData struct {
 	nodeSettings    machinecontroller.NodeSettings
 	useOSM          bool
 	namespace       string
+	constraints     *semver.Constraints
 }
 
 var jsonPatch = admissionv1.PatchTypeJSONPatch
 
-func New(
-	listenAddress string,
-	client ctrlruntimeclient.Client,
-	workerClient ctrlruntimeclient.Client,
-	um *userdatamanager.Manager,
-	nodeFlags *node.Flags,
-	useOSM bool,
-	namespace string,
-) (*http.Server, error) {
+type Builder struct {
+	ListenAddress      string
+	Client             ctrlruntimeclient.Client
+	WorkerClient       ctrlruntimeclient.Client
+	UserdataManager    *userdatamanager.Manager
+	NodeFlags          *node.Flags
+	UseOSM             bool
+	Namespace          string
+	VersionConstraints *semver.Constraints
+}
+
+func (build Builder) Build() (*http.Server, error) {
 	mux := http.NewServeMux()
 	ad := &admissionData{
-		client:          client,
-		workerClient:    workerClient,
-		userDataManager: um,
-		useOSM:          useOSM,
-		namespace:       namespace,
+		client:          build.Client,
+		workerClient:    build.WorkerClient,
+		userDataManager: build.UserdataManager,
+		useOSM:          build.UseOSM,
+		namespace:       build.Namespace,
+		constraints:     build.VersionConstraints,
 	}
 
-	if err := nodeFlags.UpdateNodeSettings(&ad.nodeSettings); err != nil {
+	if err := build.NodeFlags.UpdateNodeSettings(&ad.nodeSettings); err != nil {
 		return nil, fmt.Errorf("error updating nodeSettings, %w", err)
 	}
 
@@ -78,7 +84,7 @@ func New(
 	mux.HandleFunc("/healthz", healthZHandler)
 
 	return &http.Server{
-		Addr:    listenAddress,
+		Addr:    build.ListenAddress,
 		Handler: http.TimeoutHandler(mux, 25*time.Second, "timeout"),
 	}, nil
 }
@@ -112,12 +118,12 @@ func createAdmissionResponse(original, mutated runtime.Object) (*admissionv1.Adm
 	if !apiequality.Semantic.DeepEqual(original, mutated) {
 		patchOpts, err := newJSONPatch(original, mutated)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create json patch: %v", err)
+			return nil, fmt.Errorf("failed to create json patch: %w", err)
 		}
 
 		patchRaw, err := json.Marshal(patchOpts)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal json patch: %v", err)
+			return nil, fmt.Errorf("failed to marshal json patch: %w", err)
 		}
 		klog.V(3).Infof("Produced jsonpatch: %s", string(patchRaw))
 
@@ -177,7 +183,7 @@ func readReview(r *http.Request) (*admissionv1.AdmissionReview, error) {
 	}
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error reading data from request body: %v", err)
+		return nil, fmt.Errorf("error reading data from request body: %w", err)
 	}
 
 	// verify the content type is accurate
@@ -187,7 +193,7 @@ func readReview(r *http.Request) (*admissionv1.AdmissionReview, error) {
 
 	admissionReview := &admissionv1.AdmissionReview{}
 	if err := json.Unmarshal(body, admissionReview); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal request into admissionReview: %v", err)
+		return nil, fmt.Errorf("failed to unmarshal request into admissionReview: %w", err)
 	}
 	if admissionReview.Request == nil {
 		return nil, errors.New("invalid admission review: no request defined")

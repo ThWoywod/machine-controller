@@ -14,3 +14,5 @@ examples/*.srl
 /webhook
 /vendor
 .vscode
+.gitpod.yml
+cmd/machine-controller/__debug_bin

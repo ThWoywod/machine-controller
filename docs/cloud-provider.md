@@ -95,6 +95,11 @@ tags:
 ```yaml
 # identity endpoint of your openstack installation
 identityEndpoint: ""
+# application Credential ID and Secret can be used in place of username, password, tenantName/tenantID, and domainName.
+# application credentials ID
+applicationCredentialID: ""
+# application credentials secret
+applicationCredentialSecret: ""
 # your openstack username
 username: ""
 # your openstack password
@@ -165,6 +170,8 @@ network: "my-cool-network"
 subnetwork: "my-cool-subnetwork"
 # assign a public IP Address. Required for Internet access
 assignPublicIPAddress: true
+# if true, does not inject the Service Account from the controller in the machine, leaving it empty
+disableMachineServiceAccount: false
 # set node labels
 labels:
     "kubernetesCluster": "my-cluster"
