@@ -28,7 +28,7 @@ import (
 
 const (
 	LegacyContainerdVersion  = "1.4"
-	DefaultContainerdVersion = "1.5"
+	DefaultContainerdVersion = "1.6"
 )
 
 type Containerd struct {
@@ -106,7 +106,7 @@ ExecStart=/usr/bin/env PATH=\${TORCX_BINDIR}:\${PATH} \${TORCX_BINDIR}/container
 EOF
 
 systemctl daemon-reload
-systemctl enable --now containerd
+systemctl restart containerd
 `))
 
 	containerdAmzn2Template = template.Must(template.New("containerd-yum-amzn2").Parse(`

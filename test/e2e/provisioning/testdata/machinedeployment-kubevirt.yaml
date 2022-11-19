@@ -3,6 +3,8 @@ kind: MachineDeployment
 metadata:
   name: << MACHINE_NAME >>
   namespace: kube-system
+  annotations:
+    k8c.io/operating-system-profile: osp-<< OS_NAME >>
 spec:
   paused: false
   replicas: 1
@@ -28,13 +30,13 @@ spec:
           cloudProviderSpec:
             auth:
               kubeconfig:
-                value: '<< KUBECONFIG >>'
+                value: '<< KUBECONFIG_BASE64 >>'
             virtualMachine:
               template:
                 cpus: "1"
                 memory: "4096M"
                 primaryDisk:
-                  osImage: http://image-repo.kube-system.svc.cluster.local/images/<< OS_NAME >>.img
+                  osImage: http://image-repo.kube-system.svc.cluster.local/images/<< KUBEVIRT_OS_IMAGE >>.img
                   size: "25Gi"
                   storageClassName: longhorn
               dnsPolicy: "None"
@@ -48,7 +50,7 @@ spec:
                 type: "" # Allowed values: "", "soft", "hard"
                 key: "foo"
                 values:
-                - bar
+                  - bar
           operatingSystem: "<< OS_NAME >>"
           operatingSystemSpec:
             distUpgradeOnBoot: false

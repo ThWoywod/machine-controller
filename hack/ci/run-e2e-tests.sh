@@ -33,6 +33,7 @@ trap cleanup EXIT
 
 export GIT_HEAD_HASH="$(git rev-parse HEAD)"
 export MC_VERSION="${GIT_HEAD_HASH}"
+export OPERATING_SYSTEM_MANAGER="${OPERATING_SYSTEM_MANAGER:-true}"
 
 TEST_NAME="Pre-warm Go build cache"
 echodate "Attempting to pre-warm Go build cache"
@@ -66,11 +67,6 @@ beforeMCSetup=$(nowms)
 
 source hack/ci/setup-machine-controller-in-kind.sh
 pushElapsed kind_mc_setup_duration_milliseconds $beforeMCSetup
-
-if [[ ! -z "${NUTANIX_E2E_PROXY_HOST:-}" ]]; then
-  vm_priv_addr=$(cat ./priv_addr)
-  export NUTANIX_E2E_PROXY_URL="http://${NUTANIX_E2E_PROXY_USERNAME}:${NUTANIX_E2E_PROXY_PASSWORD}@${vm_priv_addr}:${NUTANIX_E2E_PROXY_PORT}/"
-fi
 
 echo "Running e2e tests..."
 EXTRA_ARGS=""

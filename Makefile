@@ -14,7 +14,7 @@
 
 SHELL = /bin/bash -eu -o pipefail
 
-GO_VERSION ?= 1.18.3
+GO_VERSION ?= 1.19.3
 
 GOOS ?= $(shell go env GOOS)
 
@@ -91,7 +91,7 @@ test-unit-docker:
 		-e GOCACHE=/cache \
 		-w /go/src/github.com/kubermatic/machine-controller \
 		golang:$(GO_VERSION) \
-			make test-unit GOFLAGS=$(GOFLAGS)
+			make test-unit "GOFLAGS=$(GOFLAGS)"
 
 .PHONY: test-unit
 test-unit:

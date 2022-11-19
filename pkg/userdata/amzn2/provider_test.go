@@ -100,15 +100,6 @@ func TestUserDataGeneration(t *testing.T) {
 
 	tests := []userDataTestCase{
 		{
-			name: "kubelet-v1.22-aws",
-			spec: clusterv1alpha1.MachineSpec{
-				ObjectMeta: metav1.ObjectMeta{Name: "node1"},
-				Versions: clusterv1alpha1.MachineVersionInfo{
-					Kubelet: "1.22.5",
-				},
-			},
-		},
-		{
 			name: "kubelet-v1.23-aws",
 			spec: clusterv1alpha1.MachineSpec{
 				ObjectMeta: metav1.ObjectMeta{Name: "node1"},
@@ -174,6 +165,15 @@ func TestUserDataGeneration(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "kubelet-v1.25-aws",
+			spec: clusterv1alpha1.MachineSpec{
+				ObjectMeta: metav1.ObjectMeta{Name: "node1"},
+				Versions: clusterv1alpha1.MachineVersionInfo{
+					Kubelet: "1.25.0",
+				},
+			},
+		},
 	}
 
 	defaultCloudProvider := &fakeCloudConfigProvider{
@@ -202,10 +202,10 @@ func TestUserDataGeneration(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			emtpyProviderSpec := clusterv1alpha1.ProviderSpec{
+			emptyProviderSpec := clusterv1alpha1.ProviderSpec{
 				Value: &runtime.RawExtension{},
 			}
-			test.spec.ProviderSpec = emtpyProviderSpec
+			test.spec.ProviderSpec = emptyProviderSpec
 			var cloudProvider *fakeCloudConfigProvider
 			if test.cloudProviderName != nil {
 				cloudProvider = &fakeCloudConfigProvider{

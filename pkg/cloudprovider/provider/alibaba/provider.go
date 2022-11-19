@@ -44,7 +44,7 @@ import (
 const (
 	machineUIDTag   = "machine_uid"
 	centosImageName = "CentOS  7.9 64 bit"
-	ubuntuImageName = "Ubuntu  20.04 64 bit"
+	ubuntuImageName = "Ubuntu  22.04 64 bit"
 
 	finalizerInstance = "kubermatic.io/cleanup-alibaba-instance"
 )
@@ -84,6 +84,11 @@ func (a *alibabaInstance) Name() string {
 
 func (a *alibabaInstance) ID() string {
 	return a.instance.InstanceId
+}
+
+// TODO: Implement once we start supporting Alibaba CCM.
+func (a *alibabaInstance) ProviderID() string {
+	return ""
 }
 
 func (a *alibabaInstance) Addresses() map[string]v1.NodeAddressType {

@@ -102,7 +102,7 @@ write_files:
 
     yum install -y \
         docker-ce-cli-20.10* \
-        containerd.io-1.4* \
+        containerd.io-1.6* \
         docker-ce-20.10* \
         yum-plugin-versionlock
     yum versionlock add docker-ce* containerd.io
@@ -130,7 +130,7 @@ write_files:
         ;;
     esac
     fi
-    CNI_VERSION="${CNI_VERSION:-v0.8.7}"
+    CNI_VERSION="${CNI_VERSION:-v1.1.1}"
     cni_base_url="https://github.com/containernetworking/plugins/releases/download/$CNI_VERSION"
     cni_filename="cni-plugins-linux-$arch-$CNI_VERSION.tgz"
     curl -Lfo "$cni_bin_dir/$cni_filename" "$cni_base_url/$cni_filename"
@@ -174,6 +174,18 @@ write_files:
         curl -Lfo /opt/bin/health-monitor.sh https://raw.githubusercontent.com/kubermatic/machine-controller/7967a0af2b75f29ad2ab227eeaa26ea7b0f2fbde/pkg/userdata/scripts/health-monitor.sh
         chmod +x /opt/bin/health-monitor.sh
     fi
+
+    DEFAULT_IFC_NAME=$(ip -o route get 1  | grep -oP "dev \K\S+")
+    IFC_CFG_FILE=/etc/sysconfig/network-scripts/ifcfg-$DEFAULT_IFC_NAME
+    # Enable IPv6 and DHCPv6 on the default interface
+    grep IPV6INIT $IFC_CFG_FILE && sed -i '/IPV6INIT*/c IPV6INIT=yes' $IFC_CFG_FILE || echo "IPV6INIT=yes" >> $IFC_CFG_FILE
+    grep DHCPV6C $IFC_CFG_FILE && sed -i '/DHCPV6C*/c DHCPV6C=yes' $IFC_CFG_FILE || echo "DHCPV6C=yes" >> $IFC_CFG_FILE
+    grep IPV6_AUTOCONF $IFC_CFG_FILE && sed -i '/IPV6_AUTOCONF*/c IPV6_AUTOCONF=yes' $IFC_CFG_FILE || echo "IPV6_AUTOCONF=yes" >> $IFC_CFG_FILE
+
+    # Restart NetworkManager to apply for IPv6 configs
+    systemctl restart NetworkManager
+    # Let NetworkManager apply the DHCPv6 configs
+    sleep 3
 
     # set kubelet nodeip environment variable
     mkdir -p /etc/systemd/system/kubelet.service.d/
@@ -243,7 +255,6 @@ write_files:
 
     [Install]
     WantedBy=multi-user.target
-
 - path: "/etc/kubernetes/cloud-config"
   permissions: "0600"
   content: |

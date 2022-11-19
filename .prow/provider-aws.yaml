@@ -28,7 +28,7 @@ presubmits:
       preset-kubeconfig-ci: "true"
     spec:
       containers:
-        - image: quay.io/kubermatic/build:go-1.18-node-16-kind-0.14-9
+        - image: quay.io/kubermatic/build:go-1.19-node-18-kind-0.17-4
           command:
             - "./hack/ci/run-e2e-tests.sh"
           args:
@@ -37,10 +37,42 @@ presubmits:
             privileged: true
           resources:
             requests:
-              memory: 6Gi
+              memory: 7Gi
               cpu: 2
             limits:
-              memory: 6Gi
+              memory: 7Gi
+
+  - name: pull-machine-controller-e2e-aws-legacy-userdata
+    always_run: true
+    decorate: true
+    clone_uri: "ssh://git@github.com/kubermatic/machine-controller.git"
+    labels:
+      preset-aws: "true"
+      preset-hetzner: "true"
+      preset-e2e-ssh: "true"
+      preset-rhel: "true"
+      preset-goproxy: "true"
+      preset-kind-volume-mounts: "true"
+      preset-docker-mirror: "true"
+      preset-kubeconfig-ci: "true"
+    spec:
+      containers:
+        - image: quay.io/kubermatic/build:go-1.19-node-18-kind-0.17-4
+          env:
+            - name: OPERATING_SYSTEM_MANAGER
+              value: "false"
+          command:
+            - "./hack/ci/run-e2e-tests.sh"
+          args:
+            - "TestAWSProvisioningE2E"
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              memory: 7Gi
+              cpu: 2
+            limits:
+              memory: 7Gi
 
   - name: pull-machine-controller-e2e-aws-arm
     always_run: true
@@ -56,7 +88,7 @@ presubmits:
       preset-kubeconfig-ci: "true"
     spec:
       containers:
-        - image: quay.io/kubermatic/build:go-1.18-node-16-kind-0.14-9
+        - image: quay.io/kubermatic/build:go-1.19-node-18-kind-0.17-4
           command:
             - "./hack/ci/run-e2e-tests.sh"
           args:
@@ -65,10 +97,10 @@ presubmits:
             privileged: true
           resources:
             requests:
-              memory: 6Gi
+              memory: 7Gi
               cpu: 2
             limits:
-              memory: 6Gi
+              memory: 7Gi
 
   - name: pull-machine-controller-e2e-aws-ebs-encryption-enabled
     always_run: true
@@ -84,7 +116,7 @@ presubmits:
       preset-kubeconfig-ci: "true"
     spec:
       containers:
-        - image: quay.io/kubermatic/build:go-1.18-node-16-kind-0.14-9
+        - image: quay.io/kubermatic/build:go-1.19-node-18-kind-0.17-4
           command:
             - "./hack/ci/run-e2e-tests.sh"
           args:
@@ -93,10 +125,10 @@ presubmits:
             privileged: true
           resources:
             requests:
-              memory: 6Gi
+              memory: 7Gi
               cpu: 2
             limits:
-              memory: 6Gi
+              memory: 7Gi
 
   - name: pull-machine-controller-e2e-aws-flatcar-containerd
     always_run: true
@@ -112,7 +144,7 @@ presubmits:
       preset-kubeconfig-ci: "true"
     spec:
       containers:
-        - image: quay.io/kubermatic/build:go-1.18-node-16-kind-0.14-9
+        - image: quay.io/kubermatic/build:go-1.19-node-18-kind-0.17-4
           command:
             - "./hack/ci/run-e2e-tests.sh"
           args:
@@ -121,10 +153,10 @@ presubmits:
             privileged: true
           resources:
             requests:
-              memory: 6Gi
+              memory: 7Gi
               cpu: 2
             limits:
-              memory: 6Gi
+              memory: 7Gi
 
   - name: pull-machine-controller-e2e-aws-spot-instance
     always_run: true
@@ -141,7 +173,7 @@ presubmits:
       preset-kubeconfig-ci: "true"
     spec:
       containers:
-        - image: quay.io/kubermatic/build:go-1.18-node-16-kind-0.14-9
+        - image: quay.io/kubermatic/build:go-1.19-node-18-kind-0.17-4
           command:
             - "./hack/ci/run-e2e-tests.sh"
           args:
@@ -150,10 +182,10 @@ presubmits:
             privileged: true
           resources:
             requests:
-              memory: 6Gi
+              memory: 7Gi
               cpu: 2
             limits:
-              memory: 6Gi
+              memory: 7Gi
 
   - name: pull-machine-controller-e2e-aws-sles
     always_run: false
@@ -169,7 +201,7 @@ presubmits:
       preset-kubeconfig-ci: "true"
     spec:
       containers:
-        - image: quay.io/kubermatic/build:go-1.18-node-16-kind-0.14-9
+        - image: quay.io/kubermatic/build:go-1.19-node-18-kind-0.17-4
           command:
             - "./hack/ci/run-e2e-tests.sh"
           args:
@@ -178,10 +210,10 @@ presubmits:
             privileged: true
           resources:
             requests:
-              memory: 6Gi
+              memory: 7Gi
               cpu: 2
             limits:
-              memory: 6Gi
+              memory: 7Gi
 
   - name: pull-machine-controller-e2e-aws-flatcar-coreos-cloud-init
     always_run: false
@@ -197,7 +229,7 @@ presubmits:
       preset-kubeconfig-ci: "true"
     spec:
       containers:
-        - image: quay.io/kubermatic/build:go-1.18-node-16-kind-0.14-9
+        - image: quay.io/kubermatic/build:go-1.19-node-18-kind-0.17-4
           command:
             - "./hack/ci/run-e2e-tests.sh"
           args:
@@ -206,10 +238,10 @@ presubmits:
             privileged: true
           resources:
             requests:
-              memory: 6Gi
+              memory: 7Gi
               cpu: 2
             limits:
-              memory: 6Gi
+              memory: 7Gi
 
   - name: pull-machine-controller-e2e-aws-centos8
     always_run: false
@@ -225,7 +257,7 @@ presubmits:
       preset-kubeconfig-ci: "true"
     spec:
       containers:
-        - image: quay.io/kubermatic/build:go-1.18-node-16-kind-0.14-9
+        - image: quay.io/kubermatic/build:go-1.19-node-18-kind-0.17-4
           command:
             - "./hack/ci/run-e2e-tests.sh"
           args:
@@ -234,10 +266,10 @@ presubmits:
             privileged: true
           resources:
             requests:
-              memory: 6Gi
+              memory: 7Gi
               cpu: 2
             limits:
-              memory: 6Gi
+              memory: 7Gi
 
   - name: pull-machine-controller-e2e-aws-assume-role
     always_run: false
@@ -253,7 +285,7 @@ presubmits:
       preset-kubeconfig-ci: "true"
     spec:
       containers:
-        - image: quay.io/kubermatic/build:go-1.18-node-16-kind-0.14-9
+        - image: quay.io/kubermatic/build:go-1.19-node-18-kind-0.17-4
           command:
             - "./hack/ci/run-e2e-tests.sh"
           args:
@@ -262,7 +294,7 @@ presubmits:
             privileged: true
           resources:
             requests:
-              memory: 6Gi
+              memory: 7Gi
               cpu: 2
             limits:
-              memory: 6Gi
+              memory: 7Gi

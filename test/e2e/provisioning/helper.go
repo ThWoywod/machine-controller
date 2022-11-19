@@ -33,9 +33,9 @@ var (
 	scenarios = buildScenarios()
 
 	versions = []*semver.Version{
-		semver.MustParse("v1.22.7"),
-		semver.MustParse("v1.23.5"),
-		semver.MustParse("v1.24.0"),
+		semver.MustParse("v1.23.13"),
+		semver.MustParse("v1.24.7"),
+		semver.MustParse("v1.25.3"),
 	}
 
 	operatingSystems = []providerconfigtypes.OperatingSystem{
@@ -49,11 +49,27 @@ var (
 	}
 
 	openStackImages = map[string]string{
-		string(providerconfigtypes.OperatingSystemUbuntu):     "machine-controller-e2e-ubuntu-20-04",
+		string(providerconfigtypes.OperatingSystemUbuntu):     "kubermatic-ubuntu",
 		string(providerconfigtypes.OperatingSystemCentOS):     "machine-controller-e2e-centos",
 		string(providerconfigtypes.OperatingSystemRHEL):       "machine-controller-e2e-rhel-8-5",
 		string(providerconfigtypes.OperatingSystemFlatcar):    "machine-controller-e2e-flatcar-stable-2983",
 		string(providerconfigtypes.OperatingSystemRockyLinux): "machine-controller-e2e-rockylinux",
+	}
+
+	vSphereOSImageTemplates = map[string]string{
+		string(providerconfigtypes.OperatingSystemCentOS):     "kkp-centos-7",
+		string(providerconfigtypes.OperatingSystemFlatcar):    "kkp-flatcar-3033.2.2",
+		string(providerconfigtypes.OperatingSystemRHEL):       "kkp-rhel-8.6",
+		string(providerconfigtypes.OperatingSystemRockyLinux): "kkp-rockylinux-8",
+		string(providerconfigtypes.OperatingSystemUbuntu):     "kkp-ubuntu-22.04",
+	}
+
+	kubevirtImages = map[string]string{
+		string(providerconfigtypes.OperatingSystemCentOS):     "centos",
+		string(providerconfigtypes.OperatingSystemFlatcar):    "flatcar",
+		string(providerconfigtypes.OperatingSystemRHEL):       "rhel",
+		string(providerconfigtypes.OperatingSystemRockyLinux): "rockylinux",
+		string(providerconfigtypes.OperatingSystemUbuntu):     "ubuntu-22.04",
 	}
 )
 
@@ -205,7 +221,7 @@ func testScenario(t *testing.T, testCase scenario, cloudProvider string, testPar
 	if strings.Contains(cloudProvider, string(providerconfigtypes.CloudProviderEquinixMetal)) {
 		switch testCase.osName {
 		case string(providerconfigtypes.OperatingSystemCentOS):
-			scenarioParams = append(scenarioParams, fmt.Sprintf("<< INSTANCE_TYPE >>=%s", "c3.small.x86"))
+			scenarioParams = append(scenarioParams, fmt.Sprintf("<< INSTANCE_TYPE >>=%s", "m3.small.x86"))
 			scenarioParams = append(scenarioParams, fmt.Sprintf("<< METRO_CODE >>=%s", "AM"))
 		case string(providerconfigtypes.OperatingSystemFlatcar):
 			scenarioParams = append(scenarioParams, fmt.Sprintf("<< INSTANCE_TYPE >>=%s", "c3.small.x86"))
@@ -225,6 +241,12 @@ func testScenario(t *testing.T, testCase scenario, cloudProvider string, testPar
 
 	// only used by OpenStack scenarios
 	scenarioParams = append(scenarioParams, fmt.Sprintf("<< OS_IMAGE >>=%s", openStackImages[testCase.osName]))
+
+	// only use by vSphere scenarios
+	scenarioParams = append(scenarioParams, fmt.Sprintf("<< OS_Image_Template >>=%s", vSphereOSImageTemplates[testCase.osName]))
+
+	// only use by KubeVirt scenarios
+	scenarioParams = append(scenarioParams, fmt.Sprintf("<< KUBEVIRT_OS_IMAGE >>=%s", kubevirtImages[testCase.osName]))
 
 	// default kubeconfig to the hardcoded path at which `make e2e-cluster` creates its new kubeconfig
 	gopath := os.Getenv("GOPATH")

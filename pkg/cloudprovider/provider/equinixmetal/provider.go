@@ -399,6 +399,10 @@ func (s *metalDevice) ID() string {
 	return s.device.ID
 }
 
+func (s *metalDevice) ProviderID() string {
+	return "equinixmetal://" + s.device.ID
+}
+
 func (s *metalDevice) Addresses() map[string]v1.NodeAddressType {
 	// returns addresses in CIDR format
 	addresses := map[string]v1.NodeAddressType{}
@@ -467,7 +471,7 @@ func getDeviceByTag(client *packngo.Client, projectID, tag string) (*packngo.Dev
 func getNameForOS(os providerconfigtypes.OperatingSystem) (string, error) {
 	switch os {
 	case providerconfigtypes.OperatingSystemUbuntu:
-		return "ubuntu_20_04", nil
+		return "ubuntu_22_04", nil
 	case providerconfigtypes.OperatingSystemCentOS:
 		return "centos_7", nil
 	case providerconfigtypes.OperatingSystemFlatcar:

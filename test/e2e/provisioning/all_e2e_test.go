@@ -20,6 +20,7 @@ package provisioning
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"os"
@@ -79,7 +80,7 @@ const (
 	nutanixManifest                   = "./testdata/machinedeployment-nutanix.yaml"
 )
 
-const defaultKubernetesVersion = "1.23.5"
+const defaultKubernetesVersion = "1.23.11"
 
 var testRunIdentifier = flag.String("identifier", "local", "The unique identifier for this test run")
 
@@ -117,7 +118,7 @@ func TestCustomCAsAreApplied(t *testing.T) {
 	osNetwork := os.Getenv("OS_NETWORK_NAME")
 
 	if osAuthURL == "" || osUsername == "" || osPassword == "" || osDomain == "" || osRegion == "" || osTenant == "" {
-		t.Fatal("unable to run test suite, all of OS_AUTH_URL, OS_USERNAME, OS_PASSOWRD, OS_REGION, and OS_TENANT OS_DOMAIN must be set!")
+		t.Fatal("unable to run test suite, all of OS_AUTH_URL, OS_USERNAME, OS_PASSWORD, OS_REGION, and OS_TENANT OS_DOMAIN must be set!")
 	}
 
 	params := []string{
@@ -293,10 +294,21 @@ func TestKubevirtProvisioningE2E(t *testing.T) {
 	selector := OsSelector("ubuntu", "centos", "flatcar", "rockylinux")
 
 	params := []string{
-		fmt.Sprintf("<< KUBECONFIG >>=%s", kubevirtKubeconfig),
+		fmt.Sprintf("<< KUBECONFIG_BASE64 >>=%s", safeBase64Encoding(kubevirtKubeconfig)),
 	}
 
 	runScenarios(t, selector, params, kubevirtManifest, fmt.Sprintf("kubevirt-%s", *testRunIdentifier))
+}
+
+// safeBase64Encoding takes a value and encodes it with base64
+// if it is not already encoded.
+func safeBase64Encoding(value string) string {
+	// If there was no error, the original value was already encoded.
+	if _, err := base64.StdEncoding.DecodeString(value); err == nil {
+		return value
+	}
+
+	return base64.StdEncoding.EncodeToString([]byte(value))
 }
 
 func TestOpenstackProvisioningE2E(t *testing.T) {
@@ -311,7 +323,7 @@ func TestOpenstackProvisioningE2E(t *testing.T) {
 	osNetwork := os.Getenv("OS_NETWORK_NAME")
 
 	if osAuthURL == "" || osUsername == "" || osPassword == "" || osDomain == "" || osRegion == "" || osTenant == "" {
-		t.Fatal("unable to run test suite, all of OS_AUTH_URL, OS_USERNAME, OS_PASSOWRD, OS_REGION, and OS_TENANT OS_DOMAIN must be set!")
+		t.Fatal("unable to run test suite, all of OS_AUTH_URL, OS_USERNAME, OS_PASSWORD, OS_REGION, and OS_TENANT OS_DOMAIN must be set!")
 	}
 
 	params := []string{
@@ -324,7 +336,7 @@ func TestOpenstackProvisioningE2E(t *testing.T) {
 		fmt.Sprintf("<< NETWORK_NAME >>=%s", osNetwork),
 	}
 
-	selector := Not(OsSelector("sles", "rhel", "amzn2"))
+	selector := Not(OsSelector("sles", "amzn2"))
 	runScenarios(t, selector, params, OSManifest, fmt.Sprintf("os-%s", *testRunIdentifier))
 }
 
@@ -342,7 +354,7 @@ func TestOpenstackProjectAuthProvisioningE2E(t *testing.T) {
 	osNetwork := os.Getenv("OS_NETWORK_NAME")
 
 	if osAuthURL == "" || osUsername == "" || osPassword == "" || osDomain == "" || osRegion == "" || osProject == "" {
-		t.Fatal("unable to run test suite, all of OS_AUTH_URL, OS_USERNAME, OS_PASSOWRD, OS_REGION, and OS_TENANT OS_DOMAIN must be set!")
+		t.Fatal("unable to run test suite, all of OS_AUTH_URL, OS_USERNAME, OS_PASSWORD, OS_REGION, and OS_TENANT OS_DOMAIN must be set!")
 	}
 
 	params := []string{
@@ -390,6 +402,12 @@ func TestDigitalOceanProvisioningE2E(t *testing.T) {
 func TestAWSProvisioningE2E(t *testing.T) {
 	t.Parallel()
 
+	provisioningUtility := flatcar.Ignition
+	// `OPERATING_SYSTEM_MANAGER` will be false when legacy machine-controller userdata should be used for E2E tests.
+	if v := os.Getenv("OPERATING_SYSTEM_MANAGER"); v == "false" {
+		provisioningUtility = flatcar.CloudInit
+	}
+
 	// test data
 	awsKeyID := os.Getenv("AWS_E2E_TESTS_KEY_ID")
 	awsSecret := os.Getenv("AWS_E2E_TESTS_SECRET")
@@ -402,8 +420,9 @@ func TestAWSProvisioningE2E(t *testing.T) {
 	// act
 	params := []string{fmt.Sprintf("<< AWS_ACCESS_KEY_ID >>=%s", awsKeyID),
 		fmt.Sprintf("<< AWS_SECRET_ACCESS_KEY >>=%s", awsSecret),
-		fmt.Sprintf("<< PROVISIONING_UTILITY >>=%s", flatcar.CloudInit),
+		fmt.Sprintf("<< PROVISIONING_UTILITY >>=%s", provisioningUtility),
 	}
+
 	runScenarios(t, selector, params, AWSManifest, fmt.Sprintf("aws-%s", *testRunIdentifier))
 }
 
@@ -424,7 +443,7 @@ func TestAWSAssumeRoleProvisioningE2E(t *testing.T) {
 	// act
 	params := []string{fmt.Sprintf("<< AWS_ACCESS_KEY_ID >>=%s", awsKeyID),
 		fmt.Sprintf("<< AWS_SECRET_ACCESS_KEY >>=%s", awsSecret),
-		fmt.Sprintf("<< PROVISIONING_UTILITY >>=%s", flatcar.CloudInit),
+		fmt.Sprintf("<< PROVISIONING_UTILITY >>=%s", flatcar.Ignition),
 	}
 
 	scenario := scenario{
@@ -452,7 +471,7 @@ func TestAWSSpotInstanceProvisioningE2E(t *testing.T) {
 	// act
 	params := []string{fmt.Sprintf("<< AWS_ACCESS_KEY_ID >>=%s", awsKeyID),
 		fmt.Sprintf("<< AWS_SECRET_ACCESS_KEY >>=%s", awsSecret),
-		fmt.Sprintf("<< PROVISIONING_UTILITY >>=%s", flatcar.CloudInit),
+		fmt.Sprintf("<< PROVISIONING_UTILITY >>=%s", flatcar.Ignition),
 	}
 	runScenarios(t, selector, params, AWSSpotInstanceManifest, fmt.Sprintf("aws-%s", *testRunIdentifier))
 }
@@ -533,7 +552,7 @@ func TestAWSFlatcarContainerdProvisioningE2E(t *testing.T) {
 	params := []string{
 		fmt.Sprintf("<< AWS_ACCESS_KEY_ID >>=%s", awsKeyID),
 		fmt.Sprintf("<< AWS_SECRET_ACCESS_KEY >>=%s", awsSecret),
-		fmt.Sprintf("<< PROVISIONING_UTILITY >>=%s", flatcar.CloudInit),
+		fmt.Sprintf("<< PROVISIONING_UTILITY >>=%s", flatcar.Ignition),
 	}
 
 	scenario := scenario{
@@ -701,8 +720,9 @@ func TestGCEProvisioningE2E(t *testing.T) {
 	// Act. GCE does not support CentOS.
 	selector := OsSelector("ubuntu")
 	params := []string{
-		fmt.Sprintf("<< GOOGLE_SERVICE_ACCOUNT >>=%s", googleServiceAccount),
+		fmt.Sprintf("<< GOOGLE_SERVICE_ACCOUNT_BASE64 >>=%s", safeBase64Encoding(googleServiceAccount)),
 	}
+
 	runScenarios(t, selector, params, GCEManifest, fmt.Sprintf("gce-%s", *testRunIdentifier))
 }
 
@@ -851,7 +871,7 @@ func getVSphereTestParams(t *testing.T) []string {
 func TestVsphereProvisioningE2E(t *testing.T) {
 	t.Parallel()
 
-	selector := Not(OsSelector("sles", "amzn2"))
+	selector := Not(OsSelector("sles", "amzn2", "rockylinux"))
 	params := getVSphereTestParams(t)
 
 	runScenarios(t, selector, params, VSPhereManifest, fmt.Sprintf("vs-%s", *testRunIdentifier))
@@ -929,17 +949,13 @@ func getNutanixTestParams(t *testing.T) []string {
 	cluster := os.Getenv("NUTANIX_E2E_CLUSTER_NAME")
 	project := os.Getenv("NUTANIX_E2E_PROJECT_NAME")
 	subnet := os.Getenv("NUTANIX_E2E_SUBNET_NAME")
+	additionalSubnetNames := os.Getenv("NUTANIX_E2E_ADDITIONAL_SUBNET_NAMES")
 	endpoint := os.Getenv("NUTANIX_E2E_ENDPOINT")
 
 	if password == "" || username == "" || endpoint == "" || cluster == "" || project == "" || subnet == "" {
 		t.Fatal("unable to run the test suite, NUTANIX_E2E_PASSWORD, NUTANIX_E2E_USERNAME, NUTANIX_E2E_CLUSTER_NAME, " +
 			"NUTANIX_E2E_ENDPOINT, NUTANIX_E2E_PROJECT_NAME or NUTANIX_E2E_SUBNET_NAME environment variables cannot be empty")
 	}
-
-	// a proxy URL will be passed in our e2e test environment so
-	// a HTTP proxy can be used to access the Nutanix API in a different
-	// network segment.
-	proxyURL := os.Getenv("NUTANIX_E2E_PROXY_URL")
 
 	// set up parameters
 	params := []string{fmt.Sprintf("<< NUTANIX_PASSWORD >>=%s", password),
@@ -948,7 +964,7 @@ func getNutanixTestParams(t *testing.T) []string {
 		fmt.Sprintf("<< NUTANIX_CLUSTER >>=%s", cluster),
 		fmt.Sprintf("<< NUTANIX_PROJECT >>=%s", project),
 		fmt.Sprintf("<< NUTANIX_SUBNET >>=%s", subnet),
-		fmt.Sprintf("<< NUTANIX_PROXY_URL >>=%s", proxyURL),
+		fmt.Sprintf("<< NUTANIX_ADDITIONAL_SUBNETS >>=%s", additionalSubnetNames),
 	}
 	return params
 }
@@ -978,7 +994,7 @@ func TestUbuntuProvisioningWithUpgradeE2E(t *testing.T) {
 	osNetwork := os.Getenv("OS_NETWORK_NAME")
 
 	if osAuthURL == "" || osUsername == "" || osPassword == "" || osDomain == "" || osRegion == "" || osTenant == "" {
-		t.Fatal("unable to run test suite, all of OS_AUTH_URL, OS_USERNAME, OS_PASSOWRD, OS_REGION, and OS_TENANT OS_DOMAIN must be set!")
+		t.Fatal("unable to run test suite, all of OS_AUTH_URL, OS_USERNAME, OS_PASSWORD, OS_REGION, and OS_TENANT OS_DOMAIN must be set!")
 	}
 
 	params := []string{
@@ -1030,13 +1046,20 @@ func TestAnexiaProvisioningE2E(t *testing.T) {
 	t.Parallel()
 
 	token := os.Getenv("ANEXIA_TOKEN")
-	if token == "" {
-		t.Fatal("unable to run the test suite, ANEXIA_TOKEN environment variable cannot be empty")
+	vlanID := os.Getenv("ANEXIA_VLAN_ID")
+	templateID := os.Getenv("ANEXIA_TEMPLATE_ID")
+	locationID := os.Getenv("ANEXIA_LOCATION_ID")
+
+	if token == "" || vlanID == "" || templateID == "" || locationID == "" {
+		t.Fatal("unable to run test suite, all of ANEXIA_TOKEN, ANEXIA_VLAN_ID, ANEXIA_TEMPLATE_ID, and ANEXIA_LOCATION_ID must be set!")
 	}
 
 	selector := OsSelector("flatcar")
 	params := []string{
 		fmt.Sprintf("<< ANEXIA_TOKEN >>=%s", token),
+		fmt.Sprintf("<< ANEXIA_VLAN_ID >>=%s", vlanID),
+		fmt.Sprintf("<< ANEXIA_TEMPLATE_ID >>=%s", templateID),
+		fmt.Sprintf("<< ANEXIA_LOCATION_ID >>=%s", locationID),
 	}
 
 	runScenarios(t, selector, params, anexiaManifest, fmt.Sprintf("anexia-%s", *testRunIdentifier))

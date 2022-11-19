@@ -170,7 +170,7 @@ const userDataIgnitionTemplate = `passwd:
         {{end}}
 {{- end }}
 
-{{- if .ProviderSpec.Network }}
+{{- if .ProviderSpec.Network.IsStaticIPConfig }}
 networkd:
   units:
     - name: static-nic.network
@@ -295,6 +295,10 @@ systemd:
         contents: |
           [Service]
           EnvironmentFile=/etc/kubernetes/nodeip.conf
+      - name: resolv.conf
+        contents: |
+          [Service]
+          Environment="KUBELET_EXTRA_ARGS=--resolv-conf=/run/systemd/resolve/resolv.conf"
       - name: 40-download.conf
         contents: |
           [Unit]
@@ -370,6 +374,13 @@ storage:
         inline: |
 {{ .NodeIPScript | indent 10 }}
 
+    - path: "/etc/systemd/network/zz-default.network.d/ipv6-fix.conf"
+      filesystem: root
+      mode: 0755
+      contents:
+        inline: |
+          [Network]
+          IPv6AcceptRA=true
     - path: /etc/kubernetes/bootstrap-kubelet.conf
       filesystem: root
       mode: 0400
@@ -377,12 +388,14 @@ storage:
         inline: |
 {{ .Kubeconfig | indent 10 }}
 
+{{- if ne (len .CloudConfig) 0 }}
     - path: /etc/kubernetes/cloud-config
       filesystem: root
       mode: 0400
       contents:
         inline: |
 {{ .CloudConfig | indent 10 }}
+{{- end }}
 
     - path: /etc/kubernetes/pki/ca.crt
       filesystem: root
@@ -533,7 +546,7 @@ users:
 
 coreos:
   units:
-{{- if .ProviderSpec.Network }}
+{{- if .ProviderSpec.Network.IsStaticIPConfig }}
   - name: static-nic.network
     content: |
       [Match]
@@ -617,6 +630,10 @@ coreos:
       content: |
         [Service]
         EnvironmentFile=/etc/kubernetes/nodeip.conf
+    - name: resolv.conf
+      content: |
+        [Service]
+        Environment="KUBELET_EXTRA_ARGS=--resolv-conf=/run/systemd/resolve/resolv.conf"
     - name: 40-download.conf
       content: |
         [Unit]
@@ -689,6 +706,15 @@ write_files:
   permissions: "0755"
   content: |
 {{ .NodeIPScript | indent 4 }}
+
+- path: "/etc/systemd/network/zz-default.network.d/ipv6-fix.conf"
+  permissions: "0755"
+  content: |
+    # IPv6 autoconfiguration doesn't work out of the box on some versions of Flatcar
+    # so we enable IPv6 Router Advertisement here.
+    # See for details https://github.com/flatcar-linux/Flatcar/issues/384
+    [Network]
+    IPv6AcceptRA=true
 
 - path: /etc/kubernetes/bootstrap-kubelet.conf
   permissions: "0400"

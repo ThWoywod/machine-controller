@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2021-11-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-05-01/network"
@@ -102,7 +104,9 @@ type config struct {
 	DataDiskSKU  *compute.StorageAccountTypes
 
 	AssignPublicIP              bool
+	PublicIPSKU                 *network.PublicIPAddressSkuName
 	EnableAcceleratedNetworking *bool
+	EnableBootDiagnostics       bool
 	Tags                        map[string]string
 }
 
@@ -124,6 +128,14 @@ func (vm *azureVM) Name() string {
 	return *vm.vm.Name
 }
 
+func (vm *azureVM) ProviderID() string {
+	if vm.vm.ID == nil {
+		return ""
+	}
+
+	return "azure://" + *vm.vm.ID
+}
+
 func (vm *azureVM) Status() instance.Status {
 	return vm.status
 }
@@ -137,8 +149,8 @@ var imageReferences = map[providerconfigtypes.OperatingSystem]compute.ImageRefer
 	},
 	providerconfigtypes.OperatingSystemUbuntu: {
 		Publisher: to.StringPtr("Canonical"),
-		Offer:     to.StringPtr("0001-com-ubuntu-server-focal"),
-		Sku:       to.StringPtr("20_04-lts"),
+		Offer:     to.StringPtr("0001-com-ubuntu-server-jammy"),
+		Sku:       to.StringPtr("22_04-lts"),
 		Version:   to.StringPtr("latest"),
 	},
 	providerconfigtypes.OperatingSystemRHEL: {
@@ -317,6 +329,10 @@ func (p *provider) getConfig(provSpec clusterv1alpha1.ProviderSpec) (*config, *p
 		return nil, nil, fmt.Errorf("failed to get the value of \"assignPublicIP\" field, error = %w", err)
 	}
 
+	if rawCfg.PublicIPSKU != nil {
+		c.PublicIPSKU = ipSkuPtr(*rawCfg.PublicIPSKU)
+	}
+
 	c.AssignAvailabilitySet = rawCfg.AssignAvailabilitySet
 	c.EnableAcceleratedNetworking = rawCfg.EnableAcceleratedNetworking
 
@@ -363,6 +379,10 @@ func (p *provider) getConfig(provSpec clusterv1alpha1.ProviderSpec) (*config, *p
 	c.ImageID, err = p.configVarResolver.GetConfigVarStringValue(rawCfg.ImageID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get image id: %w", err)
+	}
+
+	if rawCfg.EnableBootDiagnostics != nil {
+		c.EnableBootDiagnostics = *rawCfg.EnableBootDiagnostics
 	}
 
 	return &c, pconfig, nil
@@ -575,7 +595,10 @@ func (p *provider) Create(ctx context.Context, machine *clusterv1alpha1.Machine,
 
 	ipFamily := providerCfg.Network.GetIPFamily()
 	sku := network.PublicIPAddressSkuNameBasic
-	if ipFamily == util.DualStack {
+
+	if config.PublicIPSKU != nil {
+		sku = *config.PublicIPSKU
+	} else if ipFamily == util.DualStack {
 		// 1. Cannot specify basic sku PublicIp for an IPv6 network interface ipConfiguration.
 		// 2. Different basic sku and standard sku public Ip resources in availability set is not allowed.
 		// 1 & 2 means we have to use standard sku in dual-stack configuration.
@@ -585,6 +608,7 @@ func (p *provider) Create(ctx context.Context, machine *clusterv1alpha1.Machine,
 		// basic sku.
 		sku = network.PublicIPAddressSkuNameStandard
 	}
+
 	var publicIP, publicIPv6 *network.PublicIPAddress
 	if config.AssignPublicIP {
 		if err = data.Update(machine, func(updatedMachine *clusterv1alpha1.Machine) {
@@ -677,6 +701,14 @@ func (p *provider) Create(ctx context.Context, machine *clusterv1alpha1.Machine,
 		// Azure expects the full path to the resource
 		asURI := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Compute/availabilitySets/%s", config.SubscriptionID, config.ResourceGroup, config.AvailabilitySet)
 		vmSpec.VirtualMachineProperties.AvailabilitySet = &compute.SubResource{ID: to.StringPtr(asURI)}
+	}
+
+	if config.EnableBootDiagnostics {
+		vmSpec.DiagnosticsProfile = &compute.DiagnosticsProfile{
+			BootDiagnostics: &compute.BootDiagnostics{
+				Enabled: pointer.Bool(config.EnableBootDiagnostics),
+			},
+		}
 	}
 
 	klog.Infof("Creating machine %q", machine.Name)
@@ -1028,6 +1060,23 @@ func (p *provider) Validate(ctx context.Context, spec clusterv1alpha1.MachineSpe
 		return fmt.Errorf(util.ErrUnknownNetworkFamily, f)
 	}
 
+	if c.PublicIPSKU != nil {
+		valid := false
+		for _, sku := range network.PossiblePublicIPAddressSkuNameValues() {
+			if sku == *c.PublicIPSKU {
+				valid = true
+			}
+		}
+
+		if !valid {
+			return fmt.Errorf("unknown public IP address SKU: %s", *c.PublicIPSKU)
+		}
+
+		if providerConfig.Network.GetIPFamily() == util.DualStack && *c.PublicIPSKU == network.PublicIPAddressSkuNameBasic {
+			return fmt.Errorf("cannot use %s public IP address SKU with dualstack", network.PublicIPAddressSkuNameBasic)
+		}
+	}
+
 	vmClient, err := getVMClient(c)
 	if err != nil {
 		return fmt.Errorf("failed to (create) vm client: %w", err)
@@ -1184,6 +1233,21 @@ func getOSUsername(os providerconfigtypes.OperatingSystem) string {
 func storageTypePtr(storageType string) *compute.StorageAccountTypes {
 	storage := compute.StorageAccountTypes(storageType)
 	return &storage
+}
+
+func ipSkuPtr(ipSKU string) *network.PublicIPAddressSkuName {
+	// the correct Azure API representation is capitalized, so we do that even if the original input was all lowercase
+	sku := network.PublicIPAddressSkuName(upperFirst(ipSKU))
+	return &sku
+}
+
+func upperFirst(str string) string {
+	if str == "" {
+		return ""
+	}
+
+	r, n := utf8.DecodeRuneInString(str)
+	return string(unicode.ToUpper(r)) + str[n:]
 }
 
 // supportsDiskSKU validates some disk SKU types against the chosen VM SKU / VM type.
